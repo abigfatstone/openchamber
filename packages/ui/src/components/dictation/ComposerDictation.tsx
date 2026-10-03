@@ -5,6 +5,10 @@
  * area uses the same paddings/typography as the textarea and the action row
  * reuses the footer icon-button styling — so toggling dictation causes no
  * vertical shift.
+ *
+ * No text appears while recording. The server transcribes the audio once the
+ * user stops, so the overlay shows the recording state and then Transcribing.
+ * The only transcript rendered here is the salvage text of a failed dictation.
  */
 
 import React from 'react';
@@ -15,6 +19,7 @@ import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { cn } from '@/lib/utils';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { useDictation } from '@/hooks/useDictation';
+import { DictationWaveform } from '@/components/dictation/DictationWaveform';
 import { isDictationCaptureSupported } from '@/lib/dictation/use-dictation-audio-source';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useConfigStore } from '@/stores/useConfigStore';
@@ -31,8 +36,14 @@ interface ComposerDictationProps {
     disabled?: boolean;
     onInsert: (text: string) => void;
     onInsertAndSend: (text: string) => void;
+    /** Called once when a dictation leaves idle, before any transcript exists,
+        so the host can record which draft the dictation belongs to. */
+    onStart?: () => void;
     /** Reports whether dictation is active (recording/transcribing/failed overlay shown). */
     onActiveChange?: (active: boolean) => void;
+    /** Reports the height (px) failed-dictation salvage text needs, so the host
+        can grow the composer like typed text would; null when none is shown. */
+    onContentHeightChange?: (height: number | null) => void;
     /** Render the mic trigger button (default). Pass false when the host renders
         its own trigger and only needs the overlay + recording engine. */
     renderTrigger?: boolean;
@@ -45,25 +56,6 @@ const formatDuration = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}:${String(secs).padStart(2, '0')}`;
-};
-
-const VolumeMeter: React.FC<{ volume: number }> = ({ volume }) => {
-    const { currentTheme } = useThemeSystem();
-    return (
-        <div
-            className="h-1.5 w-16 flex-shrink-0 overflow-hidden rounded-full"
-            style={{ backgroundColor: currentTheme.colors.interactive.border }}
-            aria-hidden="true"
-        >
-            <div
-                className="h-full rounded-full transition-[width] duration-75"
-                style={{
-                    width: `${Math.round(Math.min(1, volume) * 100)}%`,
-                    backgroundColor: currentTheme.colors.primary.base,
-                }}
-            />
-        </div>
-    );
 };
 
 /**
@@ -122,7 +114,9 @@ export const ComposerDictation: React.FC<ComposerDictationProps> = ({
     disabled,
     onInsert,
     onInsertAndSend,
+    onStart,
     onActiveChange,
+    onContentHeightChange,
     renderTrigger = true,
     topAccessory,
 }) => {
@@ -158,7 +152,7 @@ export const ComposerDictation: React.FC<ComposerDictationProps> = ({
     const {
         status,
         partialTranscript,
-        volume,
+        subscribeLevel,
         duration,
         error,
         errorReason,
@@ -176,6 +170,21 @@ export const ComposerDictation: React.FC<ComposerDictationProps> = ({
     const statusRef = React.useRef(status);
     React.useEffect(() => {
         statusRef.current = status;
+    }, [status]);
+
+    // The transcript arrives long after the start; report the start itself so
+    // the host can keep the transcript with the draft that was on screen then.
+    const onStartRef = React.useRef(onStart);
+    React.useEffect(() => {
+        onStartRef.current = onStart;
+    }, [onStart]);
+    const wasIdleRef = React.useRef(true);
+    React.useLayoutEffect(() => {
+        const idle = status === 'idle';
+        if (wasIdleRef.current && !idle) {
+            onStartRef.current?.();
+        }
+        wasIdleRef.current = idle;
     }, [status]);
 
     // Layout effect on purpose: the host may expand/collapse the composer in
@@ -233,8 +242,87 @@ export const ComposerDictation: React.FC<ComposerDictationProps> = ({
     // picker), so measure it — it stays mounted underneath the overlay — and
     // give our action row the same height so the icons line up exactly.
     const overlayRef = React.useRef<HTMLDivElement | null>(null);
+    const transcriptAreaRef = React.useRef<HTMLDivElement | null>(null);
+    const transcriptContentRef = React.useRef<HTMLDivElement | null>(null);
     const [footerHeight, setFooterHeight] = React.useState<number | null>(null);
     const isActiveStatus = status !== 'idle';
+    const hasSalvageText = status === 'failed' && Boolean(partialTranscript.trim());
+
+    // Grow the composer with failed-dictation salvage text, the way typing grows
+    // the textarea. The overlay is absolutely positioned over the composer, so
+    // it can't push the composer's height itself. Measure how much room the text
+    // wants and report it to the host, which applies the editor's line and
+    // viewport caps before the salvage area scrolls.
+    const onContentHeightChangeRef = React.useRef(onContentHeightChange);
+    React.useEffect(() => {
+        onContentHeightChangeRef.current = onContentHeightChange;
+    }, [onContentHeightChange]);
+    // Two instances can coexist (mobile footer + wrapper engine); only the one
+    // that reported salvage height may clear it, or an idle sibling mounting
+    // beside a failed dictation would zero the active overlay's height.
+    const hasReportedHeightRef = React.useRef(false);
+    React.useLayoutEffect(() => {
+        if (!hasSalvageText) {
+            if (hasReportedHeightRef.current) {
+                hasReportedHeightRef.current = false;
+                onContentHeightChangeRef.current?.(null);
+            }
+            return;
+        }
+        const area = transcriptAreaRef.current;
+        const content = transcriptContentRef.current;
+        if (!area || !content) return;
+        // Measure the salvage text block, not the container: the container is flex-1
+        // inside the overlay, so its scrollHeight tracks the composer's own
+        // height — feeding that back would creep a few px on every transcript
+        // update instead of stepping per wrapped line.
+        const firstReport = !hasReportedHeightRef.current;
+        let followEnd = firstReport
+            || area.scrollHeight - area.scrollTop - area.clientHeight <= 24;
+        const trackScroll = () => {
+            followEnd = area.scrollHeight - area.scrollTop - area.clientHeight <= 24;
+        };
+        area.addEventListener('scroll', trackScroll, { passive: true });
+        const reportHeight = () => {
+            const style = window.getComputedStyle(area);
+            const padding = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+            // Keep the reader's position through rewraps. The first host cap
+            // is committed after this report, so follow again when the area
+            // shrinks, unless the reader has scrolled away from the end.
+            hasReportedHeightRef.current = true;
+            onContentHeightChangeRef.current?.(content.offsetHeight + padding);
+            if (followEnd) {
+                area.scrollTop = area.scrollHeight;
+            }
+        };
+        reportHeight();
+        // The parent applies its measured cap in a second layout commit. Follow
+        // once after that commit, before paint, rather than scrolling the old
+        // unbounded area where there was no overflow yet.
+        const initialFollowFrame = firstReport ? window.requestAnimationFrame(() => {
+            area.scrollTop = area.scrollHeight;
+            followEnd = true;
+        }) : null;
+        const cleanupScroll = () => {
+            area.removeEventListener('scroll', trackScroll);
+            if (initialFollowFrame !== null) window.cancelAnimationFrame(initialFollowFrame);
+        };
+        if (!window.ResizeObserver) return cleanupScroll;
+        const observer = new window.ResizeObserver(reportHeight);
+        // Re-report after rotation or any other width change rewraps the text.
+        observer.observe(content);
+        observer.observe(area);
+        return () => {
+            observer.disconnect();
+            cleanupScroll();
+        };
+    }, [hasSalvageText, partialTranscript]);
+    React.useEffect(() => () => {
+        if (hasReportedHeightRef.current) {
+            hasReportedHeightRef.current = false;
+            onContentHeightChangeRef.current?.(null);
+        }
+    }, []);
     React.useLayoutEffect(() => {
         if (!isActiveStatus) {
             return;
@@ -314,24 +402,34 @@ export const ComposerDictation: React.FC<ComposerDictationProps> = ({
                     // shorthand `.overflow-hidden` to overflow-y:auto on touch
                     // devices, which painted a phantom scrollbar on Android.
                     className={cn(
-                        'absolute inset-0 z-50 flex flex-col overflow-x-hidden overflow-y-hidden',
+                        // Exactly one glass surface while dictating (see the
+                        // .oc-dictation-overlay rule in design-system.css):
+                        // desktop mounts the overlay inside the glass box and
+                        // hides the box's other contents, so the overlay is
+                        // transparent; mobile mounts it beside the pill/box,
+                        // hides those, and the overlay carries the glass. The
+                        // glass sits on an inner layer, off this element's
+                        // shadow (see "Floating composer" in
+                        // composer/DOCUMENTATION.md); this element keeps the
+                        // surface's text context.
+                        'oc-dictation-overlay absolute inset-0 z-50 flex flex-col overflow-x-hidden overflow-y-hidden',
+                        isMobile && 'oc-surface-elevated border border-border/80 shadow-[0_4px_16px_-4px_rgb(0_0_0_/_0.12)]',
                         // Mobile: the overlay surface shows instantly (riding the
                         // pill → voice morph), its content fades in only after the
                         // shape has grown — otherwise the controls paint clipped
                         // inside the still-small pill.
                         isMobile && 'oc-composer-morph-content-fade',
                     )}
-                    style={{
-                        borderRadius: radius,
-                        // Must match the composer box background exactly so the
-                        // overlay reads as the same surface, not a layer on top.
-                        backgroundColor: currentTheme.colors.surface.subtle,
-                    }}
+                    style={{ borderRadius: radius }}
                     role="dialog"
                     aria-label={t('chat.dictation.overlayAria')}
                 >
+                    {isMobile ? (
+                        <div aria-hidden="true" data-dictation-glass="true" className="oc-glass-composer pointer-events-none absolute inset-0 -z-10" />
+                    ) : null}
                     {topAccessory}
                     <div
+                        ref={transcriptAreaRef}
                         className={cn(
                             // Text paddings match the composer textarea, plus the
                             // 4px (pt-1) attachment-chips row that always renders
@@ -345,25 +443,29 @@ export const ComposerDictation: React.FC<ComposerDictationProps> = ({
                             isMobile ? 'pt-3.5 pb-2.5' : 'pt-5 pb-2',
                         )}
                     >
-                        {partialTranscript ? (
-                            <p className="typography-markdown md:typography-ui-label whitespace-pre-wrap" style={{ color: currentTheme.colors.surface.foreground }}>
-                                {partialTranscript}
-                            </p>
-                        ) : (
-                            <p className="typography-markdown md:typography-ui-label" style={{ color: currentTheme.colors.surface.mutedForeground }}>
-                                {placeholderText}
-                            </p>
-                        )}
-                        {status === 'failed' ? (
-                            <p className="typography-meta mt-1" style={{ color: currentTheme.colors.status.error }}>
-                                {error || t('chat.dictation.failed')}
-                            </p>
-                        ) : null}
-                        {status === 'recording' && error && !isModelDownloading ? (
-                            <p className="typography-meta mt-1" style={{ color: currentTheme.colors.status.warning }}>
-                                {error}
-                            </p>
-                        ) : null}
+                        {/* Measured for the composer-growth report — keep all
+                            transcript/placeholder/error content inside. */}
+                        <div ref={transcriptContentRef}>
+                            {status === 'failed' && partialTranscript ? (
+                                <p className="typography-markdown md:typography-ui-label whitespace-pre-wrap" style={{ color: currentTheme.colors.surface.foreground }}>
+                                    {partialTranscript}
+                                </p>
+                            ) : (
+                                <p className="typography-markdown md:typography-ui-label" style={{ color: currentTheme.colors.surface.mutedForeground }}>
+                                    {placeholderText}
+                                </p>
+                            )}
+                            {status === 'failed' ? (
+                                <p className="typography-meta mt-1" style={{ color: currentTheme.colors.status.error }}>
+                                    {error || t('chat.dictation.failed')}
+                                </p>
+                            ) : null}
+                            {status === 'recording' && error && !isModelDownloading ? (
+                                <p className="typography-meta mt-1" style={{ color: currentTheme.colors.status.warning }}>
+                                    {error}
+                                </p>
+                            ) : null}
+                        </div>
                     </div>
                     <div
                         className={cn('flex flex-shrink-0 items-center gap-x-3', footerPaddingClass)}
@@ -381,8 +483,8 @@ export const ComposerDictation: React.FC<ComposerDictationProps> = ({
                                         style={{ backgroundColor: currentTheme.colors.status.error }}
                                     />
                                 </span>
-                                <VolumeMeter volume={volume} />
-                                <span className="typography-meta tabular-nums" style={{ color: currentTheme.colors.surface.mutedForeground }}>
+                                <DictationWaveform subscribeLevel={subscribeLevel} className="block h-4 min-w-0 flex-1" />
+                                <span className="typography-meta flex-shrink-0 tabular-nums" style={{ color: currentTheme.colors.surface.mutedForeground }}>
                                     {formatDuration(duration)}
                                 </span>
                             </>
@@ -391,7 +493,7 @@ export const ComposerDictation: React.FC<ComposerDictationProps> = ({
                         ) : null}
                         {/* Same inter-control gap as the composer's right cluster:
                             gap-x-1 on mobile, md:gap-x-3 on desktop. */}
-                        <div className={cn('ml-auto flex items-center', isMobile ? 'gap-x-1' : 'gap-x-1.5 md:gap-x-3')}>
+                        <div className={cn('ml-auto flex flex-shrink-0 items-center', isMobile ? 'gap-x-1' : 'gap-x-1.5 md:gap-x-3')}>
                             {status === 'recording' ? (
                                 <>
                                     <button

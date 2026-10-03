@@ -19,6 +19,7 @@ import {
   deleteSkillSupportingFile,
   getAncestors,
   findWorktreeRoot,
+  isPlainObject,
 } from './shared.js';
 
 const BUILT_IN_SKILL_LOCATION = '<built-in>';
@@ -27,10 +28,6 @@ function ensureProjectSkillDir(workingDirectory) {
   const projectSkillDir = path.join(workingDirectory, '.opencode', 'skills');
   if (!fs.existsSync(projectSkillDir)) {
     fs.mkdirSync(projectSkillDir, { recursive: true });
-  }
-  const legacyProjectSkillDir = path.join(workingDirectory, '.opencode', 'skill');
-  if (!fs.existsSync(legacyProjectSkillDir)) {
-    fs.mkdirSync(legacyProjectSkillDir, { recursive: true });
   }
   return projectSkillDir;
 }
@@ -199,12 +196,18 @@ function discoverSkills(workingDirectory) {
   let configuredPaths = [];
   try {
     const config = readConfig(workingDirectory);
-    configuredPaths = Array.isArray(config?.skills?.paths) ? config.skills.paths : [];
+    // OpenCode 2 stores extra skill sources as one ordered `skills` array; v1
+    // split them into `skills.paths` and `skills.urls`. URLs are not scanned
+    // from disk either way.
+    configuredPaths = Array.isArray(config?.skills)
+      ? config.skills
+      : (Array.isArray(config?.skills?.paths) ? config.skills.paths : []);
   } catch {
     configuredPaths = [];
   }
   for (const skillPath of configuredPaths) {
     if (typeof skillPath !== 'string' || !skillPath.trim()) continue;
+    if (/^https?:\/\//i.test(skillPath.trim())) continue;
     const expanded = skillPath.startsWith('~/')
       ? path.join(os.homedir(), skillPath.slice(2))
       : skillPath;
@@ -259,6 +262,50 @@ function mergeDiscoveredSkills(primarySkills = [], fallbackSkills = []) {
   }
 
   return merged;
+}
+
+// "Only when asked" is written as two frontmatter keys: the portable
+// `disable-model-invocation` (Claude Code, OpenCode 2.0.23+) and OpenCode's own
+// `metadata.opencode/autoinvoke`, which every supported OpenCode 2.x reads and
+// which wins when both are present.
+const DISABLE_MODEL_INVOCATION_KEY = 'disable-model-invocation';
+const AUTOINVOKE_METADATA_KEY = 'opencode/autoinvoke';
+
+// Same spellings OpenCode accepts for these frontmatter booleans; YAML true,
+// 1 and "yes" all reach it as the same text.
+const FRONTMATTER_BOOLEANS = new Map([
+  ['true', true], ['yes', true], ['on', true], ['1', true],
+  ['false', false], ['no', false], ['off', false], ['0', false],
+]);
+
+function parseFrontmatterBoolean(value) {
+  if (value == null || isPlainObject(value) || Array.isArray(value)) return undefined;
+  return FRONTMATTER_BOOLEANS.get(String(value).trim().toLowerCase());
+}
+
+function isModelInvocationDisabled(frontmatter) {
+  const autoinvoke = isPlainObject(frontmatter.metadata)
+    ? parseFrontmatterBoolean(frontmatter.metadata[AUTOINVOKE_METADATA_KEY])
+    : undefined;
+  if (autoinvoke !== undefined) return !autoinvoke;
+  return parseFrontmatterBoolean(frontmatter[DISABLE_MODEL_INVOCATION_KEY]) === true;
+}
+
+function applyModelInvocation(frontmatter, disabled) {
+  const metadata = isPlainObject(frontmatter.metadata) ? { ...frontmatter.metadata } : null;
+  if (disabled) {
+    frontmatter[DISABLE_MODEL_INVOCATION_KEY] = true;
+    frontmatter.metadata = { ...metadata, [AUTOINVOKE_METADATA_KEY]: false };
+    return;
+  }
+  delete frontmatter[DISABLE_MODEL_INVOCATION_KEY];
+  if (!metadata) return;
+  delete metadata[AUTOINVOKE_METADATA_KEY];
+  if (Object.keys(metadata).length > 0) {
+    frontmatter.metadata = metadata;
+  } else {
+    delete frontmatter.metadata;
+  }
 }
 
 function getSkillSources(skillName, workingDirectory, discoveredSkill = null) {
@@ -366,7 +413,8 @@ function getSkillSources(skillName, workingDirectory, discoveredSkill = null) {
       supportingFiles: [],
       name: matchedDiscovered?.name || skillName,
       description: discoveredDescription,
-      instructions: isBuiltInDiscovered ? discoveredContent : ''
+      instructions: isBuiltInDiscovered ? discoveredContent : '',
+      disableModelInvocation: false
     },
     projectMd: {
       exists: projectExists,
@@ -400,6 +448,7 @@ function getSkillSources(skillName, workingDirectory, discoveredSkill = null) {
     sources.md.fields = Object.keys(frontmatter);
     sources.md.description = frontmatter.description || '';
     sources.md.name = frontmatter.name || skillName;
+    sources.md.disableModelInvocation = isModelInvocationDisabled(frontmatter);
     if (body) {
       sources.md.fields.push('instructions');
       sources.md.instructions = body;
@@ -412,12 +461,22 @@ function getSkillSources(skillName, workingDirectory, discoveredSkill = null) {
   return sources;
 }
 
-function createSkill(skillName, config, workingDirectory, scope) {
-  ensureDirs();
+function isValidSkillName(skillName) {
+  return typeof skillName === 'string'
+    && skillName.length > 0
+    && skillName.length <= 64
+    && /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(skillName);
+}
 
-  if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(skillName) || skillName.length > 64) {
+function assertValidSkillName(skillName) {
+  if (!isValidSkillName(skillName)) {
     throw new Error(`Invalid skill name "${skillName}". Must be 1-64 lowercase alphanumeric characters with hyphens, cannot start or end with hyphen.`);
   }
+}
+
+function createSkill(skillName, config, workingDirectory, scope) {
+  ensureDirs();
+  assertValidSkillName(skillName);
 
   const existing = getSkillScope(skillName, workingDirectory);
   if (existing.path) {
@@ -454,7 +513,14 @@ function createSkill(skillName, config, workingDirectory, scope) {
 
   fs.mkdirSync(targetDir, { recursive: true });
 
-  const { instructions, scope: _scopeFromConfig, source: _sourceFromConfig, supportingFiles, ...frontmatter } = config;
+  const {
+    instructions,
+    scope: _scopeFromConfig,
+    source: _sourceFromConfig,
+    supportingFiles,
+    disableModelInvocation,
+    ...frontmatter
+  } = config;
   void _scopeFromConfig;
   void _sourceFromConfig;
 
@@ -463,6 +529,9 @@ function createSkill(skillName, config, workingDirectory, scope) {
   }
   if (!frontmatter.description) {
     throw new Error('Skill description is required');
+  }
+  if (disableModelInvocation === true) {
+    applyModelInvocation(frontmatter, true);
   }
 
   writeMdFile(targetPath, frontmatter, instructions || '');
@@ -505,7 +574,7 @@ function updateSkill(skillName, updates, workingDirectory, targetPath = null) {
   let mdModified = false;
 
   for (const [field, value] of Object.entries(updates)) {
-    if (field === 'scope' || field === 'source' || field === 'targetPath') {
+    if (field === 'scope' || field === 'source' || field === 'targetPath' || field === 'renameTo') {
       continue;
     }
     
@@ -525,6 +594,14 @@ function updateSkill(skillName, updates, workingDirectory, targetPath = null) {
             writeSkillSupportingFile(mdDir, file.path, file.content);
           }
         }
+      }
+      continue;
+    }
+
+    if (field === 'disableModelInvocation') {
+      if (value === true || value === false) {
+        applyModelInvocation(mdData.frontmatter, value);
+        mdModified = true;
       }
       continue;
     }
@@ -592,6 +669,130 @@ function deleteSkill(skillName, workingDirectory) {
   }
 }
 
+function isPathInside(candidatePath, parentPath) {
+  if (!candidatePath || !parentPath) return false;
+  const resolvedCandidate = path.resolve(candidatePath);
+  const resolvedParent = path.resolve(parentPath);
+  return resolvedCandidate === resolvedParent
+    || resolvedCandidate.startsWith(`${resolvedParent}${path.sep}`);
+}
+
+function getManagedSkillRoots(workingDirectory) {
+  const roots = [];
+  const pushRoot = (dir) => {
+    if (!dir) return;
+    const resolved = path.resolve(dir);
+    if (!roots.includes(resolved)) {
+      roots.push(resolved);
+    }
+  };
+
+  pushRoot(SKILL_DIR);
+  pushRoot(path.join(OPENCODE_CONFIG_DIR, 'skill'));
+  pushRoot(path.join(os.homedir(), '.opencode', 'skills'));
+  pushRoot(path.join(os.homedir(), '.opencode', 'skill'));
+  pushRoot(path.join(os.homedir(), '.claude', 'skills'));
+  pushRoot(path.join(os.homedir(), '.agents', 'skills'));
+
+  const customConfigDir = process.env.OPENCODE_CONFIG_DIR
+    ? path.resolve(process.env.OPENCODE_CONFIG_DIR)
+    : null;
+  if (customConfigDir) {
+    pushRoot(path.join(customConfigDir, 'skills'));
+    pushRoot(path.join(customConfigDir, 'skill'));
+  }
+
+  if (workingDirectory) {
+    const worktreeRoot = findWorktreeRoot(workingDirectory) || path.resolve(workingDirectory);
+    for (const ancestor of getAncestors(workingDirectory, worktreeRoot)) {
+      pushRoot(path.join(ancestor, '.opencode', 'skills'));
+      pushRoot(path.join(ancestor, '.opencode', 'skill'));
+      pushRoot(path.join(ancestor, '.claude', 'skills'));
+      pushRoot(path.join(ancestor, '.agents', 'skills'));
+    }
+  }
+
+  return roots;
+}
+
+function isManagedSkillPath(skillMdPath, workingDirectory) {
+  if (!skillMdPath || skillMdPath === BUILT_IN_SKILL_LOCATION) {
+    return false;
+  }
+  const skillDir = path.dirname(path.resolve(skillMdPath));
+  return getManagedSkillRoots(workingDirectory).some((root) => isPathInside(skillDir, root));
+}
+
+function renameSkill(oldName, newName, workingDirectory) {
+  ensureDirs();
+  assertValidSkillName(newName);
+
+  if (oldName === newName) {
+    return;
+  }
+
+  const existing = getSkillScope(oldName, workingDirectory);
+  if (!existing.path) {
+    throw new Error(`Skill "${oldName}" not found`);
+  }
+  if (existing.path === BUILT_IN_SKILL_LOCATION || !fs.existsSync(existing.path)) {
+    throw new Error(`Skill "${oldName}" cannot be renamed`);
+  }
+  if (path.basename(existing.path) !== 'SKILL.md') {
+    throw new Error(`Skill "${oldName}" target must be a SKILL.md file`);
+  }
+  if (!isManagedSkillPath(existing.path, workingDirectory)) {
+    throw new Error(`Skill "${oldName}" is outside managed skill directories and cannot be renamed`);
+  }
+
+  const mdDataBeforeMove = parseMdFile(existing.path);
+  const frontmatterName = typeof mdDataBeforeMove.frontmatter?.name === 'string'
+    ? mdDataBeforeMove.frontmatter.name
+    : oldName;
+  if (frontmatterName !== oldName) {
+    throw new Error(`Skill "${oldName}" does not match ${existing.path}`);
+  }
+
+  const conflict = getSkillScope(newName, workingDirectory);
+  if (conflict.path) {
+    throw new Error(`Skill ${newName} already exists at ${conflict.path}`);
+  }
+
+  const oldDir = path.dirname(existing.path);
+  const newDir = path.join(path.dirname(oldDir), newName);
+  const directoriesDiffer = path.resolve(oldDir) !== path.resolve(newDir);
+
+  if (directoriesDiffer && fs.existsSync(newDir)) {
+    throw new Error(`Skill directory already exists at ${newDir}`);
+  }
+
+  // Rename the skill directory in place so supporting files and SKILL.md body are preserved.
+  if (directoriesDiffer) {
+    fs.renameSync(oldDir, newDir);
+  }
+
+  const newPath = path.join(newDir, 'SKILL.md');
+  try {
+    const mdData = parseMdFile(newPath);
+    mdData.frontmatter = {
+      ...mdData.frontmatter,
+      name: newName,
+    };
+    writeMdFile(newPath, mdData.frontmatter, mdData.body);
+  } catch (error) {
+    if (directoriesDiffer && fs.existsSync(newDir) && !fs.existsSync(oldDir)) {
+      try {
+        fs.renameSync(newDir, oldDir);
+      } catch (rollbackError) {
+        console.error(`Failed to rollback skill rename from ${newDir} to ${oldDir}:`, rollbackError);
+      }
+    }
+    throw error;
+  }
+
+  console.log(`Renamed skill: ${oldName} -> ${newName} (path: ${newPath})`);
+}
+
 export {
   getSkillSources,
   discoverSkills,
@@ -599,4 +800,6 @@ export {
   createSkill,
   updateSkill,
   deleteSkill,
+  renameSkill,
+  isManagedSkillPath,
 };

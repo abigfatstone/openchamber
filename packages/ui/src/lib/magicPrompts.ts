@@ -9,16 +9,8 @@ export type MagicPromptId =
   | 'git.conflict.resolve.instructions'
   | 'git.integrate.cherrypick.resolve.visible'
   | 'git.integrate.cherrypick.resolve.instructions'
-  | 'github.pr.review.visible'
-  | 'github.pr.review.instructions'
-  | 'github.issue.review.visible'
-  | 'github.issue.review.instructions'
-  | 'github.pr.checks.review.visible'
-  | 'github.pr.checks.review.instructions'
-  | 'github.pr.comments.review.visible'
-  | 'github.pr.comments.review.instructions'
-  | 'github.pr.comment.single.visible'
-  | 'github.pr.comment.single.instructions'
+  | 'linear.issue.review.visible'
+  | 'linear.issue.review.instructions'
   | 'plan.todo.visible'
   | 'plan.todo.instructions'
   | 'plan.improve.visible'
@@ -37,6 +29,10 @@ export type MagicPromptId =
   | 'session.implementationResponseToReviewer.visible'
   | 'session.plan.visible'
   | 'session.plan.instructions'
+  | 'session.craftGoal.visible'
+  | 'session.craftGoal.instructions'
+  | 'session.scheduleTask.visible'
+  | 'session.scheduleTask.instructions'
   | 'session.catchup.visible'
   | 'session.catchup.instructions'
   | 'session.debug.visible'
@@ -46,13 +42,14 @@ export type MagicPromptId =
   | 'session.explore.visible'
   | 'session.explore.instructions'
   | 'session.fusion.visible'
-  | 'session.fusion.instructions';
+  | 'session.fusion.instructions'
+  | 'session.fusion.codeInstructions';
 
 export interface MagicPromptDefinition {
   id: MagicPromptId;
   title: string;
   description: string;
-  group: 'Git' | 'GitHub' | 'Planning' | 'Session';
+  group: 'Git' | 'GitHub' | 'Linear' | 'Planning' | 'Session';
   template: string;
   placeholders?: Array<{ key: string; description: string }>;
 }
@@ -79,6 +76,7 @@ const MAGIC_PROMPT_DEFINITIONS: readonly MagicPromptDefinition[] = [
     description: 'Hidden instructions for commit message generation.',
     placeholders: [
       { key: 'selected_files', description: 'Bullet list of currently selected file paths.' },
+      { key: 'recent_commits', description: 'Subjects of the most recent commits on the current branch.' },
     ],
     template: `Return exactly one JSON object and nothing else. Do not include prose, markdown, explanations, or code fences.
 
@@ -86,13 +84,16 @@ The JSON object must have exactly this shape:
 {"subject": string, "highlights": string[]}
 
 Rules:
-- subject format: <type>: <summary>
-- allowed types: feat, fix, refactor, perf, docs, test, build, ci, chore, style, revert
-- no scope in subject
+- match the style of the recent commits below: their language, capitalization, use or absence of a type prefix or scope, and typical length
+- if the recent commits are written in a language other than English, write the subject and highlights in that language
+- when the recent commits show no consistent style, use the format <type>: <summary> with one of: feat, fix, refactor, perf, docs, test, build, ci, chore, style, revert, and no scope
 - keep subject concise and user-facing
 - highlights: 0-3 concise user-facing points
 - use double quotes for all JSON strings
 - do not include trailing commas or comments
+
+Recent commits on this branch (newest first):
+{{recent_commits}}
 
 Selected files:
 {{selected_files}}`,
@@ -115,6 +116,7 @@ Selected files:
       { key: 'commits', description: 'Bullet list of commits in base...head.' },
       { key: 'changed_files', description: 'Bullet list of changed files in base...head.' },
       { key: 'additional_context_block', description: 'Optional Additional context block (already formatted).' },
+      { key: 'pr_template_block', description: 'Optional repository pull request template block (already formatted, empty when the repo has none).' },
     ],
     template: `Return exactly one JSON object and nothing else. Do not include prose, markdown outside JSON, explanations, or code fences.
 
@@ -123,7 +125,8 @@ The JSON object must have exactly this shape:
 
 Rules:
 - title: concise, outcome-first, conventional style
-- body: markdown with sections: ## Summary, ## Why, ## Testing
+- body, when a repository pull request template is included below: reuse the template as the body. Keep its headings, their order, its wording and its checklists, drop its HTML comments, and fill every section from the commits and changed files. Leave a section empty rather than inventing content for it
+- body, when no template is included: markdown with sections ## Summary, ## Why, ## Testing
 - keep output concrete and user-facing
 - put all markdown inside the body string
 - use double quotes for all JSON strings and escape newlines as \\n
@@ -136,84 +139,24 @@ Commits in range (base...head):
 {{commits}}
 
 Files changed across these commits:
-{{changed_files}}{{additional_context_block}}`,
+{{changed_files}}{{additional_context_block}}{{pr_template_block}}`,
   },
   {
-    id: 'github.pr.review.visible',
-    title: 'PR Review Visible Prompt',
-    group: 'GitHub',
-    description: 'Visible user message when creating PR review requests from GitHub context.',
+    id: 'linear.issue.review.visible',
+    title: 'Linear Issue Review Visible Prompt',
+    group: 'Linear',
+    description: 'Visible user message when creating a session from a Linear issue.',
     placeholders: [
-      { key: 'pr_number', description: 'Pull request number.' },
+      { key: 'identifier', description: 'Linear issue identifier, such as ENG-12.' },
     ],
-    template: 'Review this pull request #{{pr_number}} using the provided PR context',
+    template: 'Review this Linear issue {{identifier}} using the provided issue context',
   },
   {
-    id: 'github.pr.review.instructions',
-    title: 'PR Review Instructions',
-    group: 'GitHub',
-    description: 'Hidden instructions attached when generating a PR review response.',
-    template: `You are drafting a pull request review comment that will be posted back to the PR author. You are not the implementer; do not propose to write code or run commands.
-
-Before drafting:
-- Read the PR title and body first to anchor on the author's intent. Evaluate whether the implementation matches that intent — missing pieces, incorrect behavior vs intent, scope creep.
-- The PR diff is the source of truth for what changed; the repo on disk may not yet reflect those changes. Read the diff carefully. Use the repo only as ancillary context (imports, call sites, existing patterns, nearby code) when you need to verify a specific claim — not to discover the changes themselves.
-- No speculation: every reported issue must be grounded in the diff plus ancillary repo evidence you actually read. If a claim cannot be verified, drop it — do not hedge or guess.
-- Clarifying question: if the PR's intent itself is unreadable (title/body give no "why", diff is ambiguous on purpose), ask me one focused question about intent and stop. Do not open a discovery loop — this is a review, not a planning session.
-
-High-signal bar — only report issues that meet all of:
-- Objective and verifiable from the diff plus ancillary repo evidence.
-- Introduced by this PR (not pre-existing).
-- Material: bugs that will cause incorrect runtime behavior, security/privacy risks, correctness edge cases, backwards-compat breakage, missing implementations across modules/targets, boundary violations, OR a clear CLAUDE.md / AGENTS.md violation where you can quote the exact rule.
-
-Do NOT report:
-- Pre-existing issues unrelated to the diff.
-- Pedantic nitpicks a senior engineer would not flag.
-- Issues a linter would catch.
-- Subjective style preferences not explicitly required by CLAUDE.md / AGENTS.md.
-- "Might" / "could" / "potential" concerns without concrete evidence.
-- Rules mentioned in CLAUDE.md / AGENTS.md but explicitly silenced in the code (e.g., via an ignore comment or documented exception).
-- Missing tests / coverage gaps unless CLAUDE.md / AGENTS.md explicitly requires them for the changed area.
-
-Validation pass: before writing the final comment, re-check each candidate issue against the diff + ancillary repo evidence. Drop anything you are not certain about. False positives waste the author's time.
-
-Output rules:
-- Produce a single review comment addressed to the PR author, using the exact format below.
-- No emojis. No code snippets. No fenced blocks. Short inline code identifiers are fine.
-- Reference evidence with file paths and line ranges (e.g., path/to/file.ts:120-138) derived from the diff. Use "approx" only as a last resort when the diff does not expose exact lines.
-- One bullet per unique issue; do not duplicate an issue across sections.
-- Keep the whole comment under ~300 words.
-
-Format exactly:
-<1-2 sentence summary of intent and top-level verdict>
-
-Must-fix:
-- <issue> - <brief why> - <file:line-range> - Action: <one-line action>
-Nice-to-have:
-- <issue> - <brief why> - <file:line-range> - Action: <one-line action>
-
-If nothing clears the high-signal bar, write:
-Must-fix:
-- None
-Nice-to-have:
-- None`,
-  },
-  {
-    id: 'github.issue.review.visible',
-    title: 'Issue Review Visible Prompt',
-    group: 'GitHub',
-    description: 'Visible user message when creating issue review requests from GitHub context.',
-    placeholders: [
-      { key: 'issue_number', description: 'Issue number.' },
-    ],
-    template: 'Review this issue #{{issue_number}} using the provided issue context',
-  },
-  {
-    id: 'github.issue.review.instructions',
-    title: 'Issue Review Instructions',
-    group: 'GitHub',
-    description: 'Hidden instructions attached when generating an issue review response.',
-    template: `Review this issue using the provided issue context.
+    id: 'linear.issue.review.instructions',
+    title: 'Linear Issue Review Instructions',
+    group: 'Linear',
+    description: 'Hidden instructions attached when generating a Linear issue review response.',
+    template: `Review this Linear issue using the provided issue context.
 
 Process:
 - First classify the issue type (bug / feature request / question/support / refactor / ops) and state it as: Type: <one label>.
@@ -252,61 +195,6 @@ Question/Support:
 - Missing info (max 4)
 
 Do not implement changes until I confirm; end with: "Next actions: <1 sentence>".`,
-  },
-  {
-    id: 'github.pr.checks.review.visible',
-    title: 'PR Failed Checks Visible Prompt',
-    group: 'GitHub',
-    description: 'Visible user message for PR failed checks analysis.',
-    template: 'Review these PR failed checks and propose likely fixes. Do not implement until I confirm.',
-  },
-  {
-    id: 'github.pr.checks.review.instructions',
-    title: 'PR Failed Checks Instructions',
-    group: 'GitHub',
-    description: 'Hidden instructions for PR failed checks analysis.',
-    template: `Use the attached checks payload.
-- Summarize what is failing.
-- Prioritize check annotations/errors over generic status text.
-- Identify likely root cause(s).
-- Propose a minimal fix plan and verification steps.
-- No speculation: ask for missing info if needed.`,
-  },
-  {
-    id: 'github.pr.comments.review.visible',
-    title: 'PR Comments Review Visible Prompt',
-    group: 'GitHub',
-    description: 'Visible user message for PR comments analysis.',
-    template: 'Review these PR comments and propose the required changes and next actions. Do not implement until I confirm.',
-  },
-  {
-    id: 'github.pr.comments.review.instructions',
-    title: 'PR Comments Review Instructions',
-    group: 'GitHub',
-    description: 'Hidden instructions for PR comments analysis.',
-    template: `Use the attached comments payload.
-- Identify required vs optional changes.
-- Call out intent/implementation mismatch if present.
-- Before proposing a plan: if a comment's intent is ambiguous, or the required change depends on a tradeoff only I can decide, ask me focused clarifying questions in batches of at most 3 and wait for answers. Do not speculate.
-- Once intent is clear, propose a minimal plan and verification steps.`,
-  },
-  {
-    id: 'github.pr.comment.single.visible',
-    title: 'Single PR Comment Visible Prompt',
-    group: 'GitHub',
-    description: 'Visible user message for single PR comment analysis.',
-    template: 'Address this comment from PR and propose required changes. Do not implement until I confirm.',
-  },
-  {
-    id: 'github.pr.comment.single.instructions',
-    title: 'Single PR Comment Instructions',
-    group: 'GitHub',
-    description: 'Hidden instructions for single PR comment analysis.',
-    template: `Use the attached single-comment payload.
-- Explain what the reviewer is asking for.
-- Identify exact code areas likely impacted.
-- Before proposing a plan: if the reviewer's intent is ambiguous or the required change depends on a tradeoff only I can decide, ask me focused clarifying questions in batches of at most 3 and wait for answers. Do not speculate.
-- Once intent is clear, propose a minimal implementation plan and verification steps.`,
   },
   {
     id: 'git.conflict.resolve.visible',
@@ -707,6 +595,8 @@ Please review the latest state again and report any remaining issues.
 
 Run this as a dialogue, not a one-shot answer.
 
+Use the \`question\` tool only for clarifying decisions that have a small set of concrete answer options you already know from the conversation or your investigation — choices like option A/B/C, scope boundaries, or edge-case behavior. Ask open-ended questions, including what the user wants in the first place, in plain assistant text. Never invent speculative options just to fit the question tool.
+
 1. Understand before asking. Once the user describes the idea, first investigate the codebase yourself — read the relevant files, existing patterns, data flow, and constraints. Ground every question in what the code actually shows, not in assumptions.
 
 2. Ask in small batches. Ask at most 3 clarifying questions at a time — a number a person can comfortably answer in one reply. Prefer concrete, decision-oriented questions (option A/B/C, edge cases, scope boundaries) over vague open-ended ones. Number them.
@@ -718,6 +608,116 @@ Run this as a dialogue, not a one-shot answer.
 5. Do not write code or begin implementing during this phase. Planning is for understanding and deciding only.
 
 6. When everything is settled, produce the final implementation plan: a clear, ordered breakdown of the work, the files and areas affected, the decisions that were made (and why), known risks, and any remaining assumptions flagged explicitly. The plan must reflect the user's actual answers — never fill gaps with guesses.
+
+7. After presenting the plan, if the \`openchamber\` tool is available, offer to start a separate session yourself to implement it; do so only after the user explicitly confirms, and include the full plan in that session's prompt because the new session cannot see this conversation.
+
+Respond in the same language the user uses.`,
+  },
+  {
+    id: 'session.craftGoal.visible',
+    title: 'Goal Crafting Visible Prompt',
+    group: 'Session',
+    description: 'Visible user message sent by the /craft-goal command.',
+    placeholders: [
+      { key: 'idea_block', description: 'Optional initial task or idea supplied after the command.' },
+    ],
+    template: `Help me turn an idea or task into a clear, verifiable Goal.{{idea_block}}`,
+  },
+  {
+    id: 'session.craftGoal.instructions',
+    title: 'Goal Crafting Instructions',
+    group: 'Session',
+    description: 'Hidden instructions attached to the /craft-goal command. Guides discovery and produces a ready-to-use Goal objective.',
+    template: `The user wants help turning a task, idea, or desired outcome into a strong Goal for an autonomous, multi-turn working session.
+
+A Goal is a persistent completion contract, not an implementation plan and not a larger one-shot prompt. Help the user define what "done" means clearly enough that another agent can work toward it, verify it against evidence, continue through uncertain intermediate steps, and stop honestly when completion is blocked.
+
+Run this as a guided dialogue, not a one-shot answer.
+
+Use the \`question\` tool only for clarifying decisions that have a small set of concrete answer options you already know from the conversation or your investigation — choices like option A/B/C, scope boundaries, or edge-case behavior. Ask open-ended questions, including what the user wants in the first place, in plain assistant text. Never invent speculative options just to fit the question tool.
+
+1. Start from the user's intent. If the visible message includes an initial idea, use it immediately. Otherwise ask in plain text what they want to accomplish and wait for the answer. Do not ask them to formulate the Goal themselves.
+
+2. Investigate before asking when context is available. For repository work, inspect relevant code, tests, scripts, documentation, and conventions when that would answer questions or expose constraints. Do not ask for information that can be determined reliably from the workspace.
+
+3. Decide whether a Goal is appropriate. Goals fit work with a durable objective, an evidence-based finish line, and an uncertain or iterative path. If this is a one-off edit, simple explanation, or obvious single step, explain briefly that a normal prompt is likely better. Continue crafting a Goal if the user still wants one.
+
+4. Resolve the Goal contract:
+- Outcome: what must be true when the work is complete.
+- Verification surface: which tests, benchmarks, commands, artifacts, source material, observations, or other evidence prove completion.
+- Constraints: what behavior, quality, compatibility, safety, performance, or scope must remain intact.
+- Boundaries: which files, systems, tools, data, repositories, environments, or resources may or may not be used.
+- Iteration policy: how the working agent should evaluate evidence and choose the next useful action after each attempt.
+- Blocked stop condition: when it should stop, what evidence and attempted paths it should report, and what input would unlock progress.
+
+5. Ask only necessary questions, in batches of at most 3. Prefer concrete, decision-oriented questions. Distinguish facts found in the workspace from decisions only the user can make.
+
+6. Do not over-prescribe the path. Define the destination, evidence standard, and operating constraints while leaving the working agent room to choose its next action from what it learns.
+
+7. Do not invent precision. Never fabricate targets, commands, environments, acceptance criteria, or scope. When exact criteria are unavailable, define an honest evidence standard that separates confirmed results, approximations, blockers, and remaining uncertainty.
+
+8. Do not implement the task. You may inspect the workspace to understand it, but do not edit files, execute the proposed solution, or begin working toward the Goal. This session's deliverable is the Goal itself.
+
+9. Once the contract is resolved, respond in exactly this structure:
+
+## Proposed Goal
+
+\`\`\`text
+<one self-contained Goal objective ready to paste into the Goal dialog; do not prefix it with /goal>
+\`\`\`
+
+## Why This Is Verifiable
+
+- <brief explanation of the outcome and evidence>
+- <brief explanation of the preserved constraints>
+- <brief explanation of the blocked stop condition>
+
+## Assumptions
+
+- <only assumptions that still matter, or "None">
+
+The proposed Goal should normally be one compact paragraph. Keep enough operational detail to make completion auditable, but remove conversational history, rationale, repetition, and implementation details that are not part of the completion contract.
+
+Do not activate, execute, or claim completion of the proposed Goal. End by inviting the user to revise it or use it in the Goal dialog. If the \`openchamber\` tool is available, also offer to start a new Goal session for it yourself; do so only after the user explicitly confirms.
+
+Respond in the same language the user uses.`,
+  },
+  {
+    id: 'session.scheduleTask.visible',
+    title: 'Scheduled Task Visible Prompt',
+    group: 'Session',
+    description: 'Visible user message sent by the /schedule-task command.',
+    placeholders: [
+      { key: 'idea_block', description: 'Optional initial automation idea supplied after the command.' },
+    ],
+    template: `Help me set up a scheduled task.{{idea_block}}`,
+  },
+  {
+    id: 'session.scheduleTask.instructions',
+    title: 'Scheduled Task Instructions',
+    group: 'Session',
+    description: 'Hidden instructions attached to the /schedule-task command. Guides the dialogue that defines a scheduled task and optionally creates it through the openchamber tool.',
+    template: `The user wants to set up a scheduled task: a saved prompt that OpenChamber runs automatically on a schedule (daily, weekly, one time, or cron) in a chosen project, with a chosen model and optional Goal Mode.
+
+Run this as a guided dialogue, not a one-shot answer.
+
+Use the \`question\` tool only for clarifying decisions that have a small set of concrete answer options you already know from the conversation or your investigation — choices like option A/B/C, scope boundaries, or edge-case behavior. Ask open-ended questions, including what the user wants in the first place, in plain assistant text. Never invent speculative options just to fit the question tool.
+
+1. Start from the user's intent. If the visible message includes an initial idea, use it immediately. Otherwise ask in plain text what they want to automate, and wait for the answer — do not propose invented automation ideas and do not start investigating the workspace before you know the intent.
+
+2. Investigate before asking. When the task concerns this repository, inspect the relevant code, scripts, tests, or documentation so the prompt you draft is grounded in what actually exists. Do not ask for information the workspace can answer.
+
+3. Resolve the task definition:
+- Name: a short, recognizable task name.
+- Prompt: the exact instruction the scheduled agent receives on every run. It must be fully self-contained — the scheduled session has no memory of this conversation, so include every path, command, and expectation it needs.
+- Schedule: a daily time, weekly days plus a time, a one-time date plus a time, or a cron expression; include the timezone when it matters.
+- Model in provider/model format. Mention agent, variant, or Goal Mode with a token budget only if the user brings them up.
+
+4. Ask only necessary questions, in batches of at most 3. Prefer concrete, decision-oriented questions.
+
+5. Do not perform the task's work in this session. The deliverable is the scheduled task definition.
+
+6. When everything is settled, present the final task definition clearly. If the \`openchamber\` tool is available, offer to create the task yourself and, only after the user explicitly confirms, create it and report the result. If the tool is unavailable, present the definition so the user can add it in OpenChamber's scheduled tasks UI.
 
 Respond in the same language the user uses.`,
   },
@@ -770,6 +770,8 @@ Respond in the same language the user uses.`,
     description: 'Hidden instructions attached to the /debug command. Runs a guided root-cause investigation before proposing a fix.',
     template: `The user wants help debugging an issue. Drive this as a focused root-cause investigation — not a plan, and not an immediate fix.
 
+Use the \`question\` tool only for clarifying decisions that have a small set of concrete answer options you already know from the conversation or your investigation — choices like option A/B/C, scope boundaries, or edge-case behavior. Ask open-ended questions, including what the user wants in the first place, in plain assistant text. Never invent speculative options just to fit the question tool.
+
 1. Get the symptom. When the user describes the problem, capture exactly what is observed versus expected — error messages, stack traces, failing behavior, and when it started. If a key detail is missing to even begin, ask for it briefly.
 
 2. Form hypotheses. List the most likely causes, ordered by probability given the symptom and the code, and be explicit about your reasoning.
@@ -797,6 +799,8 @@ Respond in the same language the user uses.`,
     group: 'Session',
     description: 'Hidden instructions attached to the /weigh command. Investigates the code, then compares distinct approaches with trade-offs and a recommendation — no plan, no code.',
     template: `The user knows WHAT they want to do but not HOW to approach it. Help them choose a direction — this is about weighing options and recommending one, not producing a detailed plan and not writing code.
+
+Use the \`question\` tool only for clarifying decisions that have a small set of concrete answer options you already know from the conversation or your investigation — choices like option A/B/C, scope boundaries, or edge-case behavior. Ask open-ended questions, including what the user wants in the first place, in plain assistant text. Never invent speculative options just to fit the question tool.
 
 First, investigate. Once the user describes the goal, read the relevant code, existing patterns, and constraints so your options are grounded in this codebase rather than generic advice. Make sure you actually understand what they are trying to achieve and why. Ask a clarifying question only if a key constraint is missing and would actually change the options.
 
@@ -857,6 +861,34 @@ Respond in the same language the user uses.`,
 Goal: produce the strongest possible final answer by combining complementary information, resolving conflicts, removing duplicates, and preserving useful nuance.
 
 Use the results below as source material. Do not mention that the inputs were hidden parts. If sources disagree, prefer the most specific, well-supported, and internally consistent answer.
+
+--- FUSION INPUTS START ---`,
+  },
+  {
+    id: 'session.fusion.codeInstructions',
+    title: 'Code Fusion Instructions',
+    group: 'Session',
+    description: 'Hidden instructions for fusing parallel runs that changed code. The fusion works in its own worktree and reads each attempt from git.',
+    placeholders: [
+      { key: 'baseCommit', description: 'Commit every attempt started from; the fusion worktree starts here too' },
+      { key: 'attemptCount', description: 'Number of attempts being fused' },
+    ],
+    template: `You are fusing {{attemptCount}} parallel attempts at the same coding task into one result.
+
+You are working in a fresh git worktree created at {{baseCommit}}, the commit every attempt started from. Each attempt's complete result, including uncommitted and new files, is saved as a snapshot commit listed below. Read the attempts with git instead of guessing:
+
+- \`git diff {{baseCommit}} <snapshot> --stat\` gives an overview of an attempt.
+- \`git diff {{baseCommit}} <snapshot> -- <path>\` shows one file's changes.
+- \`git show <snapshot>:<path>\` prints a file as that attempt left it.
+
+How to work:
+1. Read each attempt's final answer and change summary below, then pick the strongest attempt as your base.
+2. Bring the base in with \`git checkout <snapshot> -- .\` (or per path).
+3. Where attempts differ, compare the relevant files and port what is better from the others: fixes, tests, edge cases, clearer code.
+4. Keep the result consistent and run the project's checks when they are available.
+5. Do not commit. Finish with a short summary: which attempt you used as the base and what you took from each of the others.
+
+Read diffs selectively, file by file; do not print every attempt in full.
 
 --- FUSION INPUTS START ---`,
   },

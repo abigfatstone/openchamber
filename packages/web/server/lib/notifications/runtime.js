@@ -1,3 +1,8 @@
+import { unwrapOpenCodeResponse } from '../opencode/response-envelope.js';
+import { createSessionActivityProbe } from '../opencode/session-activity.js';
+import { isEnterpriseMode } from '../enterprise-mode.js';
+
+
 export const createNotificationTriggerRuntime = (deps) => {
   const {
     readSettingsFromDisk,
@@ -14,7 +19,25 @@ export const createNotificationTriggerRuntime = (deps) => {
     isAnyInteractiveClientVisible,
     buildOpenCodeUrl,
     getOpenCodeAuthHeaders,
+    // OpenChamber's own session metadata (the goal lives there, not on the
+    // OpenCode record). Optional: without it no goal can suppress a push.
+    readSessionMetadata = null,
   } = deps;
+  let getIsSessionAutoAccepting = deps.getIsSessionAutoAccepting;
+  const activityProbe = createSessionActivityProbe({ buildOpenCodeUrl, getOpenCodeAuthHeaders, timeoutMs: 2000 });
+
+  // A parent goes idle while a background subagent still works; OpenCode then
+  // hands the result back and the parent runs again. That first idle is a
+  // pause, so it announces nothing. When the check cannot be made, the idle is
+  // announced as before: a missed "ready" is worse than an early one.
+  const isPausedForSubagents = async (sessionId) => {
+    const statuses = await activityProbe.fetchActiveSessionStatuses();
+    if (!statuses) return false;
+    return (await activityProbe.hasWorkingChildren(sessionId, statuses)) === true;
+  };
+  const setGetIsSessionAutoAccepting = (resolver) => {
+    getIsSessionAutoAccepting = typeof resolver === 'function' ? resolver : undefined;
+  };
 
   // App-icon badge for native push: the set of DISTINCT collapse-ids (the push
   // `tag`, e.g. `ready-<sessionId>` / `permission-<requestKey>`) we've sent since
@@ -50,7 +73,12 @@ export const createNotificationTriggerRuntime = (deps) => {
     error: 'Agent hit an error',
     question: 'Agent needs your input',
     permission: 'Agent needs permission',
+    goal_complete: 'Goal complete',
+    goal_blocked: 'Goal blocked',
+    goal_budget: 'Goal reached its token budget',
   };
+
+  const genericTitleOf = (payload) => APNS_TITLE_BY_TYPE[payload?.data?.type] || 'Agent update';
 
   const toApnsGenericPayload = (payload) => {
     const data = payload?.data && typeof payload.data === 'object' ? payload.data : {};
@@ -58,8 +86,9 @@ export const createNotificationTriggerRuntime = (deps) => {
       ? data.sessionName.trim()
       : 'Session';
     return {
-      title: APNS_TITLE_BY_TYPE[data.type] || 'Agent update',
-      body: sessionName,
+      title: genericTitleOf(payload),
+      // A session name is derived from the conversation.
+      body: isEnterpriseMode() ? '' : sessionName,
       badge: trackPushAndCountBadge(typeof payload?.tag === 'string' ? payload.tag : undefined),
       tag: payload?.tag,
       // sessionId is forwarded so a tapped push can deep-link; it is an opaque id, not content.
@@ -70,6 +99,16 @@ export const createNotificationTriggerRuntime = (deps) => {
   // Fan a notification out to every delivery channel: browser web-push (full templated
   // payload) and native iOS APNs (generic model-based text). Both share the dedup tag and
   // `requireNoSse` focus gate; a failure in one channel must not block the other.
+  // Web push leaves through the browser vendor's push service. It is
+  // encrypted, but enterprise mode keeps conversation content off every
+  // channel it does not control: the scenario title and the deep link only.
+  const toWebPushPayload = (payload) => {
+    if (!isEnterpriseMode()) return payload;
+    // Every payload built in this file carries a `data` object.
+    const { sessionName: _sessionName, ...rest } = payload.data ?? {};
+    return { ...payload, title: genericTitleOf(payload), body: '', data: rest };
+  };
+
   const fanoutPush = (payload, options) => {
     // Presence-aware routing: if any interactive (non-mobile) client — desktop/web/vscode — is
     // currently visible, it already shows the in-app notification, so skip the native push to the
@@ -77,7 +116,7 @@ export const createNotificationTriggerRuntime = (deps) => {
     // also skip toApnsGenericPayload, so the badge isn't incremented for an undelivered push.
     const interactiveVisible = isAnyInteractiveClientVisible?.() === true;
     return Promise.all([
-      Promise.resolve(sendPushToAllUiSessions?.(payload, options)).catch((error) => {
+      Promise.resolve(sendPushToAllUiSessions?.(toWebPushPayload(payload), options)).catch((error) => {
         console.warn('[Push] web-push fanout failed:', error?.message ?? error);
       }),
       interactiveVisible
@@ -103,6 +142,7 @@ export const createNotificationTriggerRuntime = (deps) => {
   const pushPermissionDebounceTimers = new Map();
   const notifiedPermissionRequests = new Set();
   const lastReadyNotificationAt = new Map();
+  const lastErrorNotificationAt = new Map();
 
   const sessionParentIdCache = new Map();
   const SESSION_PARENT_CACHE_TTL_MS = 60 * 1000;
@@ -129,45 +169,98 @@ export const createNotificationTriggerRuntime = (deps) => {
     return `/?session=${encodeURIComponent(sessionId)}`;
   };
 
-  const getCachedSessionParentId = (sessionId) => {
-    const entry = sessionParentIdCache.get(sessionId);
+  const getSessionParentCacheKey = (sessionId, directory) => `${directory || ''}\0${sessionId}`;
+
+  const getCachedSessionParentId = (sessionId, directory) => {
+    const cacheKey = getSessionParentCacheKey(sessionId, directory);
+    const entry = sessionParentIdCache.get(cacheKey);
     if (!entry) return undefined;
     if (Date.now() - entry.at > SESSION_PARENT_CACHE_TTL_MS) {
-      sessionParentIdCache.delete(sessionId);
+      sessionParentIdCache.delete(cacheKey);
       return undefined;
     }
     return entry.parentID;
   };
 
-  const setCachedSessionParentId = (sessionId, parentID) => {
-    if (!parentID) return;
-    sessionParentIdCache.set(sessionId, { parentID: parentID ?? null, at: Date.now() });
+  const setCachedSessionParentId = (sessionId, directory, parentID) => {
+    sessionParentIdCache.set(getSessionParentCacheKey(sessionId, directory), { parentID: parentID ?? null, at: Date.now() });
   };
 
   const getParentIdFromPayload = (payload) => {
-    if (!payload || typeof payload !== 'object') return null;
-    if (payload.type !== 'session.created' && payload.type !== 'session.updated') return null;
-    const parentID = payload.properties?.info?.parentID ?? null;
-    return typeof parentID === 'string' && parentID.length > 0 ? parentID : null;
+    if (!payload || typeof payload !== 'object') return undefined;
+    if (payload.type !== 'session.created' && payload.type !== 'session.updated') return undefined;
+    const parentID = payload.properties?.info?.parentID;
+    if (typeof parentID === 'string' && parentID.length > 0) return parentID;
+    // Only the full record from `session.created` proves a session has no
+    // parent. `session.updated` also carries partial records (usage, title)
+    // without `parentID`, and reading those as "no parent" turned a subagent
+    // into a main session, so its finish announced "ready" with subagent
+    // notifications turned off.
+    return payload.type === 'session.created' ? null : undefined;
+  };
+
+  // v2 splits one assistant turn over two events: `session.step.started`
+  // names the agent and model, `session.step.ended` carries the finish. The
+  // translator hands both over as `message.updated` on the same message id,
+  // so the start is remembered here and folded into the finish, which is the
+  // event the "ready" push is built from. Bounded: a session emits a handful
+  // of steps and the map is per process.
+  const ASSISTANT_STEP_CACHE_LIMIT = 500;
+  const assistantStepMeta = new Map();
+  // The reply a turn ended on: the idle event names only the session, so the
+  // ready notification borrows this step's id for its agent, model and text.
+  const lastAssistantStepBySession = new Map();
+  const rememberAssistantStep = (info) => {
+    if (!info || info.role !== 'assistant') return;
+    const id = String(info.id ?? '');
+    const agent = String(info.agent ?? info.mode ?? '');
+    const modelID = String(info.modelID ?? '');
+    if (!id || (!agent && !modelID)) return;
+    assistantStepMeta.delete(id);
+    assistantStepMeta.set(id, { agent, modelID });
+    const sessionId = String(info.sessionID ?? '');
+    if (sessionId) {
+      lastAssistantStepBySession.delete(sessionId);
+      lastAssistantStepBySession.set(sessionId, id);
+      while (lastAssistantStepBySession.size > ASSISTANT_STEP_CACHE_LIMIT) {
+        lastAssistantStepBySession.delete(lastAssistantStepBySession.keys().next().value);
+      }
+    }
+    while (assistantStepMeta.size > ASSISTANT_STEP_CACHE_LIMIT) {
+      assistantStepMeta.delete(assistantStepMeta.keys().next().value);
+    }
+  };
+  const withRememberedStep = (info) => {
+    const remembered = info ? assistantStepMeta.get(String(info.id ?? '')) : undefined;
+    if (!remembered) return info;
+    const merged = { ...info };
+    if (!merged.agent && !merged.mode) {
+      merged.agent = remembered.agent;
+      merged.mode = remembered.agent;
+    }
+    if (!merged.modelID) merged.modelID = remembered.modelID;
+    return merged;
   };
 
   const maybeCacheSessionParentFromPayload = (payload) => {
     const sessionId = extractSessionIdFromPayload(payload);
     if (typeof sessionId !== 'string' || sessionId.length === 0) return;
+    const directory = extractDirectoryFromPayload(payload);
     const parentID = getParentIdFromPayload(payload);
-    if (parentID) {
-      setCachedSessionParentId(sessionId, parentID);
-    }
+    if (parentID === undefined) return;
+    setCachedSessionParentId(sessionId, directory, parentID);
   };
 
-  const fetchSessionParentId = async (sessionId) => {
+  const fetchSessionParentId = async (sessionId, directory) => {
     if (!sessionId) return undefined;
 
-    const cached = getCachedSessionParentId(sessionId);
+    const cached = getCachedSessionParentId(sessionId, directory);
     if (cached !== undefined) return cached;
 
     try {
-      const response = await fetch(buildOpenCodeUrl('/session', ''), {
+      const base = buildOpenCodeUrl(`/api/session/${encodeURIComponent(sessionId)}`, '');
+      const url = directory ? `${base}?directory=${encodeURIComponent(directory)}` : base;
+      const response = await fetch(url, {
         method: 'GET',
         headers: {
           Accept: 'application/json',
@@ -178,21 +271,15 @@ export const createNotificationTriggerRuntime = (deps) => {
       if (!response.ok) {
         return undefined;
       }
-      const data = await response.json().catch(() => null);
-      const sessions = Array.isArray(data)
-        ? data
-        : Array.isArray(data?.items)
-          ? data.items
-          : Array.isArray(data?.data)
-            ? data.data
-            : null;
-      if (!sessions) {
+      const session = unwrapOpenCodeResponse(await response.json().catch(() => null));
+      if (!session || typeof session !== 'object') {
         return undefined;
       }
 
-      const match = sessions.find((session) => session && typeof session === 'object' && session.id === sessionId);
-      const parentID = match?.parentID ?? null;
-      setCachedSessionParentId(sessionId, parentID);
+      const parentID = typeof session.parentID === 'string' && session.parentID.length > 0
+        ? session.parentID
+        : null;
+      setCachedSessionParentId(sessionId, directory, parentID);
       return parentID;
     } catch {
       return undefined;
@@ -201,14 +288,14 @@ export const createNotificationTriggerRuntime = (deps) => {
 
   // Mirrors client-side autoRespondsPermission: a session auto-accepts if it
   // OR any ancestor is flagged. Walks the parent chain via fetchSessionParentId.
-  const isSessionAutoAccepting = async (sessionId) => {
+  const isSessionAutoAccepting = async (sessionId, directory) => {
     if (!sessionId || autoAcceptingSessions.size === 0) return false;
     let current = sessionId;
     const seen = new Set();
     while (current && !seen.has(current)) {
       if (autoAcceptingSessions.has(current)) return true;
       seen.add(current);
-      const parent = await fetchSessionParentId(current);
+      const parent = await fetchSessionParentId(current, directory);
       if (!parent) return false;
       current = parent;
     }
@@ -272,6 +359,20 @@ export const createNotificationTriggerRuntime = (deps) => {
       .join(' ');
   };
 
+  // A session with an ACTIVE goal suppresses per-turn ready notifications;
+  // the session-goal runtime sends its own notification when the goal
+  // settles. Fetch failures fall through to normal notification behavior.
+  const hasActiveSessionGoal = async (sessionId) => {
+    if (!sessionId || typeof readSessionMetadata !== 'function') return false;
+    try {
+      const metadata = await readSessionMetadata(sessionId);
+      const goal = metadata?.openchamber?.goal;
+      return Boolean(goal && typeof goal === 'object' && goal.status === 'active');
+    } catch {
+      return false;
+    }
+  };
+
   const maybeSendPushForTrigger = async (payload) => {
     if (!payload || typeof payload !== 'object') {
       return;
@@ -281,23 +382,68 @@ export const createNotificationTriggerRuntime = (deps) => {
 
     const sessionId = extractSessionIdFromPayload(payload);
     const notificationDirectory = extractDirectoryFromPayload(payload);
+    // A user abort arrives as `session.idle` with `aborted: true`: the turn
+    // did not finish, so there is nothing to announce as ready.
+    if (payload.type === 'session.idle' && payload.properties?.aborted === true) {
+      return;
+    }
+
+    if ((payload.type === 'session.idle' || payload.type === 'session.error') && sessionId) {
+      if (payload.type === 'session.idle' && await isPausedForSubagents(sessionId)) {
+        return;
+      }
+      const error = payload.properties?.error;
+      const errorText = typeof error?.message === 'string'
+        ? error.message
+        : typeof error === 'string' ? error : '';
+      await maybeSendPushForTrigger({
+        ...payload,
+        type: 'message.updated',
+        properties: {
+          ...payload.properties,
+          // Only a turn end announces readiness; a step's `stop` does not.
+          turnEnded: true,
+          info: {
+            id: lastAssistantStepBySession.get(sessionId),
+            sessionID: sessionId,
+            role: 'assistant',
+            finish: payload.type === 'session.error' ? 'error' : 'stop',
+            ...(errorText ? { parts: [{ type: 'text', text: errorText }] } : {}),
+          },
+        },
+      });
+      return;
+    }
+
     if (payload.type === 'message.updated') {
-      const info = payload.properties?.info;
-      if (info?.role === 'assistant' && info?.finish === 'stop' && sessionId) {
+      rememberAssistantStep(payload.properties?.info);
+      const info = withRememberedStep(payload.properties?.info);
+      // v2 ends every step with a `message.updated`; the last one says `stop`,
+      // but the execution can still drain steering input after it. Readiness
+      // is announced from the execution's terminal `session.idle` instead.
+      if (info?.role === 'assistant' && info?.finish === 'stop' && sessionId && payload.properties?.turnEnded === true) {
+        payload = { ...payload, properties: { ...payload.properties, info } };
         const settings = await readSettingsFromDisk();
 
         if (settings.notifyOnSubtasks === false) {
           const parentIDFromPayload = getParentIdFromPayload(payload);
           const parentID = parentIDFromPayload
             ? parentIDFromPayload
-            : await fetchSessionParentId(sessionId);
+            : await fetchSessionParentId(sessionId, notificationDirectory);
 
-          if (parentID) {
+          if (parentID !== null) {
             return;
           }
         }
 
         if (settings.notifyOnCompletion === false) {
+          return;
+        }
+
+        // While a goal drives the session, per-turn "ready" notifications are
+        // noise produced by the goal loop itself — the goal's own settle
+        // notification (complete/blocked/budget) is the final word instead.
+        if (await hasActiveSessionGoal(sessionId)) {
           return;
         }
 
@@ -318,7 +464,7 @@ export const createNotificationTriggerRuntime = (deps) => {
 
         try {
           const templates = settings.notificationTemplates || {};
-          const isSubtask = await fetchSessionParentId(sessionId);
+          const isSubtask = await fetchSessionParentId(sessionId, notificationDirectory);
           const completionTemplate = isSubtask && settings.notifyOnSubtasks !== false
             ? (templates.subtask || templates.completion || { title: '{agent_name} is ready', message: '{model_name} completed the task' })
             : (templates.completion || { title: '{agent_name} is ready', message: '{model_name} completed the task' });
@@ -378,6 +524,11 @@ export const createNotificationTriggerRuntime = (deps) => {
       if (info?.role === 'assistant' && info?.finish === 'error' && sessionId) {
         const settings = await readSettingsFromDisk();
         if (settings.notifyOnError === false) return;
+
+        const now = Date.now();
+        const lastAt = lastErrorNotificationAt.get(sessionId) ?? 0;
+        if (now - lastAt < PUSH_READY_COOLDOWN_MS) return;
+        lastErrorNotificationAt.set(sessionId, now);
 
         if (settings.notificationMode !== 'always' && getIsWindowFocused?.()) {
           return;
@@ -443,7 +594,7 @@ export const createNotificationTriggerRuntime = (deps) => {
       return;
     }
 
-    if (payload.type === 'question.asked' && sessionId) {
+    if (payload.type === 'form.created' && sessionId) {
       const existingTimer = pushQuestionDebounceTimers.get(sessionId);
       if (existingTimer) {
         clearTimeout(existingTimer);
@@ -461,9 +612,14 @@ export const createNotificationTriggerRuntime = (deps) => {
           return;
         }
 
-        const firstQuestion = payload.properties?.questions?.[0];
-        const header = typeof firstQuestion?.header === 'string' ? firstQuestion.header.trim() : '';
-        const questionText = typeof firstQuestion?.question === 'string' ? firstQuestion.question.trim() : '';
+        // v2 replaced questions with forms: the form's title is the ask, and
+        // the first field carries the detail a question used to put in its body.
+        const form = payload.properties?.form;
+        const header = typeof form?.title === 'string' ? form.title.trim() : '';
+        const firstField = Array.isArray(form?.fields) ? form.fields[0] : null;
+        const fieldTitle = typeof firstField?.title === 'string' ? firstField.title.trim() : '';
+        const fieldDescription = typeof firstField?.description === 'string' ? firstField.description.trim() : '';
+        const questionText = fieldDescription || fieldTitle;
 
         let title = /plan\s*mode/i.test(header)
           ? 'Switch to plan mode'
@@ -543,16 +699,25 @@ export const createNotificationTriggerRuntime = (deps) => {
 
     if (payload.type === 'permission.asked' && sessionId) {
       const requestId = payload.properties?.id ?? payload.properties?.requestID ?? payload.properties?.requestId;
-      const permission = payload.properties?.permission;
+      // v2 describes a permission request as an action plus the resources it
+      // touches; the v1 single `permission` string is gone.
+      const permissionAction = typeof payload.properties?.action === 'string' ? payload.properties.action.trim() : '';
+      const permissionResource = Array.isArray(payload.properties?.resources)
+        ? String(payload.properties.resources[0] ?? '').trim()
+        : '';
+      const permissionMessage = typeof payload.properties?.message === 'string' ? payload.properties.message.trim() : '';
+      const permission = permissionMessage
+        || (permissionAction && permissionResource ? `${permissionAction}: ${permissionResource}` : permissionAction);
       const requestKey = typeof requestId === 'string' ? `${sessionId}:${requestId}` : null;
       if (requestKey && notifiedPermissionRequests.has(requestKey)) {
         return;
       }
 
-      // Client may be in Permission Auto-Accept for this session (or any
-      // ancestor). Skip the whole notification path — the client responds
-      // directly and the user has opted out of approval prompts.
-      if (await isSessionAutoAccepting(sessionId)) {
+      // The session (or an ancestor) answers permissions by itself. Skip the
+      // notification when this request was answered automatically; one the
+      // safety net held for the user still notifies.
+      if (await (getIsSessionAutoAccepting?.(sessionId, notificationDirectory, requestId)
+        ?? isSessionAutoAccepting(sessionId, notificationDirectory))) {
         if (requestKey) notifiedPermissionRequests.add(requestKey);
         return;
       }
@@ -565,7 +730,8 @@ export const createNotificationTriggerRuntime = (deps) => {
       const timer = setTimeout(async () => {
         pushPermissionDebounceTimers.delete(sessionId);
 
-        if (await isSessionAutoAccepting(sessionId)) {
+        if (await (getIsSessionAutoAccepting?.(sessionId, notificationDirectory, requestId)
+          ?? isSessionAutoAccepting(sessionId, notificationDirectory))) {
           if (requestKey) notifiedPermissionRequests.add(requestKey);
           return;
         }
@@ -644,10 +810,49 @@ export const createNotificationTriggerRuntime = (deps) => {
     }
   };
 
+  // Goal settle push: same fanout as the trigger paths (web-push with the
+  // full text; APNs with the generic per-type title and the session name as
+  // body, so the relay never sees content).
+  const sendGoalSettlePush = async ({ sessionId, directory, status, title, body }) => {
+    let sessionName = '';
+    try {
+      const base = buildOpenCodeUrl(`/api/session/${encodeURIComponent(sessionId)}`, '');
+      const url = directory ? `${base}?directory=${encodeURIComponent(directory)}` : base;
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: { Accept: 'application/json', ...getOpenCodeAuthHeaders() },
+        signal: AbortSignal.timeout(2000),
+      });
+      if (response.ok) {
+        const session = unwrapOpenCodeResponse(await response.json().catch(() => null));
+        if (typeof session?.title === 'string') sessionName = session.title.trim();
+      }
+    } catch {
+      // Session name is presentation sugar for the mobile push — never block on it.
+    }
+    const type = status === 'complete' ? 'goal_complete' : (status === 'budgetLimited' ? 'goal_budget' : 'goal_blocked');
+    await fanoutPush(
+      {
+        title,
+        body,
+        tag: `goal-${sessionId}`,
+        data: {
+          url: buildSessionDeepLinkUrl(sessionId),
+          sessionId,
+          sessionName,
+          type,
+        },
+      },
+      { requireNoSse: true },
+    );
+  };
+
   return {
     maybeSendPushForTrigger,
     setAutoAcceptSession,
     setGetIsWindowFocused,
+    setGetIsSessionAutoAccepting,
     clearPendingPushBadge,
+    sendGoalSettlePush,
   };
 };

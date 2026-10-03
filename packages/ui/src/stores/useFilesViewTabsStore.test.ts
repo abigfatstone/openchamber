@@ -3,7 +3,7 @@ import { useFilesViewTabsStore } from './useFilesViewTabsStore';
 
 describe('useFilesViewTabsStore', () => {
   beforeEach(() => {
-    useFilesViewTabsStore.setState({ byRoot: {} });
+    useFilesViewTabsStore.setState({ byRoot: {}, activeRuntimeKey: 'runtime-a', runtimeSnapshots: {} });
   });
 
   test('ignores runtime paths outside the requested root', () => {
@@ -18,6 +18,17 @@ describe('useFilesViewTabsStore', () => {
     expect(useFilesViewTabsStore.getState().byRoot).toEqual({});
   });
 
+  test('selects an outside path only when allowOutsideRoot is set', () => {
+    const root = '/repo';
+    const store = useFilesViewTabsStore.getState();
+
+    store.setSelectedPath(root, '/tmp/agent-output.txt', { allowOutsideRoot: true });
+
+    const state = useFilesViewTabsStore.getState().byRoot[root];
+    expect(state?.selectedPath).toBe('/tmp/agent-output.txt');
+    expect(state?.openPaths).toEqual(['/tmp/agent-output.txt']);
+  });
+
   test('filters expanded path batches to the requested root', () => {
     const root = '/repo';
 
@@ -27,6 +38,20 @@ describe('useFilesViewTabsStore', () => {
     ]);
 
     expect(useFilesViewTabsStore.getState().byRoot[root]?.expandedPaths).toEqual(['/repo/src']);
+  });
+
+  test('rejects realpath children of workspace symlinks (issue 2627)', () => {
+    const root = '/workspace';
+    const store = useFilesViewTabsStore.getState();
+
+    store.toggleExpandedPath(root, '/workspace/pkg');
+    store.toggleExpandedPath(root, '/real/pkg/src');
+    store.toggleExpandedPath(root, '/workspace/pkg/src');
+
+    expect(useFilesViewTabsStore.getState().byRoot[root]?.expandedPaths).toEqual([
+      '/workspace/pkg',
+      '/workspace/pkg/src',
+    ]);
   });
 
   test('removes stale expanded paths by prefix without closing files', () => {
@@ -46,5 +71,17 @@ describe('useFilesViewTabsStore', () => {
     const state = useFilesViewTabsStore.getState().byRoot[root];
     expect(state?.openPaths).toEqual(['/repo/src/index.ts']);
     expect(state?.expandedPaths).toEqual(['/repo/src', '/repo/other']);
+  });
+
+  test('restores independent active projections across runtime switches', () => {
+    useFilesViewTabsStore.getState().addOpenPath('/repo', '/repo/a.ts');
+    useFilesViewTabsStore.getState().resetForRuntimeSwitch('runtime-b');
+    expect(useFilesViewTabsStore.getState().byRoot).toEqual({});
+    useFilesViewTabsStore.getState().addOpenPath('/repo', '/repo/b.ts');
+
+    useFilesViewTabsStore.getState().resetForRuntimeSwitch('runtime-a');
+    expect(useFilesViewTabsStore.getState().byRoot['/repo']?.openPaths).toEqual(['/repo/a.ts']);
+    useFilesViewTabsStore.getState().resetForRuntimeSwitch('runtime-b');
+    expect(useFilesViewTabsStore.getState().byRoot['/repo']?.openPaths).toEqual(['/repo/b.ts']);
   });
 });

@@ -1,6 +1,6 @@
-import type { SessionStatus } from '@opencode-ai/sdk/v2/client'
-import type { Session } from '@opencode-ai/sdk/v2'
+import type { Session, SessionStatus } from '@/lib/opencode/model'
 import type { State } from './types'
+import { countSyncPerformance } from './performance-diagnostics'
 
 type LiveStateSlice = Pick<State, 'session' | 'session_status'>
 
@@ -25,7 +25,6 @@ const getSessionSignature = (session: Session): string => {
     session.time?.archived ?? 0,
     directory,
     parentID,
-    session.share?.url ?? '',
   ].join('|')
 }
 
@@ -42,21 +41,12 @@ const getStatusPriority = (status: SessionStatus | undefined): number => {
   }
 }
 
-const getStatusMessage = (status: SessionStatus | undefined): string | null => {
-  const message = (status as { message?: unknown } | undefined)?.message
-  return typeof message === 'string' ? message : null
-}
-
-const getStatusNumberField = (status: SessionStatus | undefined, field: 'attempt' | 'next'): number | null => {
-  const value = (status as Record<string, unknown> | undefined)?.[field]
-  return typeof value === 'number' ? value : null
-}
-
+// Only the retry variant carries attempt/message/next, so equality compares
+// those fields when both sides are retries and the discriminator otherwise.
 const areStatusesEquivalent = (left: SessionStatus | undefined, right: SessionStatus | undefined): boolean => {
-  return left?.type === right?.type
-    && getStatusMessage(left) === getStatusMessage(right)
-    && getStatusNumberField(left, 'attempt') === getStatusNumberField(right, 'attempt')
-    && getStatusNumberField(left, 'next') === getStatusNumberField(right, 'next')
+  if (left?.type !== right?.type) return false
+  if (left?.type !== 'retry' || right?.type !== 'retry') return true
+  return left.attempt === right.attempt && left.message === right.message && left.next === right.next
 }
 
 type StatusCandidate = {
@@ -158,10 +148,16 @@ export function aggregateLiveSessionStatuses(states: Iterable<LiveStateSlice>): 
   const candidates = new Map<string, StatusCandidate>()
 
   for (const state of states) {
-    for (const sessionId of Object.keys(state.session_status ?? {})) {
-      const next = getStatusCandidate(state, sessionId)
-      if (!next) {
-        continue
+    const sessionUpdatedAtById = new Map<string, number>()
+    for (const session of state.session) {
+      countSyncPerformance('statusAggregationSessionEntries')
+      sessionUpdatedAtById.set(session.id, getSessionUpdatedAt(session))
+    }
+    for (const [sessionId, status] of Object.entries(state.session_status ?? {})) {
+      countSyncPerformance('statusAggregationCandidates')
+      const next: StatusCandidate = {
+        status,
+        sessionUpdatedAt: sessionUpdatedAtById.get(sessionId) ?? -1,
       }
 
       const current = candidates.get(sessionId)

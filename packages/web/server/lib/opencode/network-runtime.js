@@ -1,8 +1,22 @@
+import { readOpenCodeInfo, isSupportedOpenCodeVersion } from './compatibility.js';
 export const createOpenCodeNetworkRuntime = (deps) => {
   const {
     state,
     getOpenCodeAuthHeaders,
+    configuredOpenCodeHostname = '127.0.0.1',
   } = deps;
+
+  const resolveConnectHostname = () => {
+    const raw = typeof configuredOpenCodeHostname === 'string' ? configuredOpenCodeHostname.trim() : '';
+    const hostname = raw || '127.0.0.1';
+    if (hostname === '0.0.0.0' || hostname === '::' || hostname === '[::]') {
+      return '127.0.0.1';
+    }
+    if (hostname.startsWith('[') && hostname.endsWith(']')) {
+      return hostname;
+    }
+    return hostname.includes(':') ? `[${hostname}]` : hostname;
+  };
 
   const normalizeApiPrefix = (prefix) => {
     if (!prefix) {
@@ -33,7 +47,9 @@ export const createOpenCodeNetworkRuntime = (deps) => {
       try {
         const controller = new AbortController();
         timeout = setTimeout(() => controller.abort(), 3000);
-        const response = await fetch(`${url.replace(/\/+$/, '')}/global/health`, {
+        // OpenCode 2.0.8 replaced `/api/health` with `/api/info`: a 200 is the
+        // readiness signal, the payload carries no `healthy` field.
+        const response = await fetch(`${url.replace(/\/+$/, '')}/api/info`, {
           method: 'GET',
           headers: {
             Accept: 'application/json',
@@ -44,12 +60,8 @@ export const createOpenCodeNetworkRuntime = (deps) => {
         clearTimeout(timeout);
         timeout = null;
 
-        if (response.ok) {
-          const body = await response.json().catch(() => null);
-          if (body?.healthy === true) {
-            return true;
-          }
-        }
+        const info = await readOpenCodeInfo(response);
+        if (info && isSupportedOpenCodeVersion(info.version)) return true;
       } catch {
       } finally {
         if (timeout) {
@@ -77,7 +89,7 @@ export const createOpenCodeNetworkRuntime = (deps) => {
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
     const prefix = normalizeApiPrefix(prefixOverride !== undefined ? prefixOverride : '');
     const fullPath = `${prefix}${normalizedPath}`;
-    const base = state.openCodeBaseUrl ?? `http://localhost:${state.openCodePort}`;
+    const base = state.openCodeBaseUrl ?? `http://${resolveConnectHostname()}:${state.openCodePort}`;
     return `${base}${fullPath}`;
   };
 

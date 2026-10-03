@@ -1,3 +1,5 @@
+import { registerNotificationEmitRoutes } from '../notifications/emit-route.js';
+
 export const createBootstrapRuntime = (dependencies) => {
   const {
     createUiAuth,
@@ -7,6 +9,7 @@ export const createBootstrapRuntime = (dependencies) => {
     registerTtsRoutes,
     registerNotificationRoutes,
     registerOpenChamberRoutes,
+    registerAgentToolRoutes = () => {},
     express,
   } = dependencies;
 
@@ -18,10 +21,19 @@ export const createBootstrapRuntime = (dependencies) => {
       serverStartedAt,
       gracefulShutdown,
       getHealthSnapshot,
+      getServerPort,
+      getTunnelUrl,
       verboseRequestLogs,
       uiPassword,
       tunnelAuthController,
       remoteClientAuthRuntime,
+      clientPairingRuntime,
+      getRelayPairingCandidate,
+      reconcileRelay,
+      getPairingTransports,
+      getDirectCandidateUrls,
+      getServerId,
+      getServerLabel,
       readSettingsFromDiskMigrated,
       normalizeTunnelSessionTtlMs,
       sayTTSCapability,
@@ -52,6 +64,10 @@ export const createBootstrapRuntime = (dependencies) => {
       fetchFreeZenModels,
       getCachedZenModels,
       setAutoAcceptSession,
+      agentToolRuntime,
+      pluginNotificationEmitter,
+      desktopUpdater,
+      skipBodyParsing,
     } = options;
 
     const uiAuthController = createUiAuth({
@@ -71,20 +87,41 @@ export const createBootstrapRuntime = (dependencies) => {
       serverStartedAt,
       gracefulShutdown,
       getHealthSnapshot,
+      getServerId,
+      getServerPort,
+      getTunnelUrl,
       tunnelAuthController,
       uiAuthController,
     });
 
-    registerCommonRequestMiddleware(app, { express, verboseRequestLogs });
+    registerCommonRequestMiddleware(app, { express, verboseRequestLogs, skipBodyParsing });
+
+    registerAgentToolRoutes(app, { express, agentToolRuntime });
+
+    const notificationEmitRoutes = registerNotificationEmitRoutes(app, {
+      express,
+      isAgentToolRequestAuthorized: (req) => agentToolRuntime?.authorizeRequest?.(req) === true,
+      emitter: pluginNotificationEmitter,
+    });
+    notificationEmitRoutes.registerPluginRoute();
 
     registerAuthAndAccessRoutes(app, {
       express,
       tunnelAuthController,
       uiAuthController,
       remoteClientAuthRuntime,
+      clientPairingRuntime,
+      getRelayPairingCandidate,
+      reconcileRelay,
+      getPairingTransports,
+      getDirectCandidateUrls,
+      getServerId,
+      getServerLabel,
       readSettingsFromDiskMigrated,
       normalizeTunnelSessionTtlMs,
     });
+
+    notificationEmitRoutes.registerApiRoute();
 
     registerTtsRoutes(app, { sayTTSCapability });
 
@@ -107,6 +144,7 @@ export const createBootstrapRuntime = (dependencies) => {
       writeSseEvent,
       getSessionActivitySnapshot: sessionRuntime.getSessionActivitySnapshot,
       getSessionStateSnapshot: sessionRuntime.getSessionStateSnapshot,
+      getPendingBlockingRequestsSnapshot: sessionRuntime.getPendingBlockingRequestsSnapshot,
       getSessionAttentionSnapshot: sessionRuntime.getSessionAttentionSnapshot,
       getSessionState: sessionRuntime.getSessionState,
       getSessionAttentionState: sessionRuntime.getSessionAttentionState,
@@ -130,6 +168,7 @@ export const createBootstrapRuntime = (dependencies) => {
       readSettingsFromDiskMigrated,
       fetchFreeZenModels,
       getCachedZenModels,
+      desktopUpdater,
     });
 
     return {

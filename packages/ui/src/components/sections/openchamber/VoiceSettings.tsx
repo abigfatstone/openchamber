@@ -9,18 +9,32 @@ import {
     SelectTrigger,
     SelectValue,
 } from '@/components/ui/select';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Radio } from '@/components/ui/radio';
 import { Button } from '@/components/ui/button';
 import { NumberInput } from '@/components/ui/number-input';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Icon } from "@/components/icon/Icon";
+import {
+    SettingsSection,
+    SettingsCheckboxRow,
+    SettingsFieldRow,
+    SettingsControlGroup,
+    SettingsChipGroup,
+    SETTINGS_SELECT_SIZE,
+    SETTINGS_NUMBER_INPUT_CLASS,
+    SETTINGS_SELECT_ROW_TRIGGER_CLASS,
+    SETTINGS_CONTROL_CLUSTER_CLASS,
+    SETTINGS_FIELD_LABEL_CLASS,
+    SETTINGS_HELPER_CLASS,
+} from '@/components/sections/shared/SettingsSection';
+import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 import { browserVoiceService } from '@/lib/voice/browserVoiceService';
 import { cn } from '@/lib/utils';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { useI18n } from '@/lib/i18n';
 import { useLocalTTS } from '@/hooks/useLocalTTS';
 import { disposePreviewAudio } from './voicePreviewAudio';
+
+const VOICE_TEXT_INPUT_CLASS = 'oc-surface-elevated w-full h-7 rounded-lg border border-input bg-surface-elevated px-2 typography-ui-label text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring focus:border-interactive-border-focus';
 
 const LOCAL_STT_MODELS = [
     {
@@ -59,6 +73,7 @@ const LOCAL_STT_MODELS = [
 
 interface DictationModelState {
     id: string;
+    description?: string;
     installed: boolean;
     downloading: boolean;
     downloadProgress: number | null;
@@ -153,92 +168,104 @@ const LocalModelPicker = ({
     };
 
     return (
-        <div role="radiogroup" aria-label={t('settings.voice.page.field.model')} className="mt-1 space-y-0">
+        <div
+            role="radiogroup"
+            aria-label={t('settings.voice.page.field.model')}
+            className="mt-1.5 grid w-full grid-cols-1 gap-3 @xl:grid-cols-2"
+        >
             {LOCAL_STT_MODELS.map((entry) => {
                 const selected = selectedModelId === entry.id;
                 const state = models.get(entry.id) ?? null;
                 return (
-                    <div key={entry.id} className="flex w-full items-start gap-2 py-1.5">
-                        <div className="pt-0.5">
-                            <Radio
-                                checked={selected}
-                                onChange={() => onSelect(entry.id)}
-                                ariaLabel={tUnsafe(entry.labelKey)}
-                            />
-                        </div>
-                        <div
-                            className="min-w-0 flex-1 cursor-pointer"
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => onSelect(entry.id)}
-                            onKeyDown={(e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); onSelect(entry.id); } }}
-                        >
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                                <span className={cn('typography-ui-label font-normal', selected ? 'text-foreground' : 'text-foreground/50')}>
-                                    {tUnsafe(entry.labelKey)}
-                                </span>
-                                {entry.badgeKey ? (
-                                    <span
-                                        className="rounded px-1 text-[9px] font-medium uppercase leading-[14px] tracking-wide"
-                                        style={{
-                                            backgroundColor: 'var(--status-success-background)',
-                                            color: 'var(--status-success)',
-                                            border: '1px solid var(--status-success-border)',
-                                        }}
-                                    >
-                                        {tUnsafe(entry.badgeKey)}
+                    <div
+                        key={entry.id}
+                        className={cn(
+                            'rounded-lg border border-[var(--interactive-border)] p-3',
+                            selected && 'border-border bg-interactive-selection text-interactive-selection-foreground',
+                        )}
+                    >
+                        <div className="flex items-start justify-between gap-2">
+                            <div
+                                className="flex min-w-0 flex-1 cursor-pointer items-start gap-2"
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => onSelect(entry.id)}
+                                onKeyDown={(e) => {
+                                    if (e.key === ' ' || e.key === 'Enter') {
+                                        e.preventDefault();
+                                        onSelect(entry.id);
+                                    }
+                                }}
+                            >
+                                <div className="pt-0.5">
+                                    <Radio
+                                        checked={selected}
+                                        onChange={() => onSelect(entry.id)}
+                                        ariaLabel={tUnsafe(entry.labelKey)}
+                                    />
+                                </div>
+                                <div className="min-w-0 flex-1 space-y-2">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <span className={cn('typography-ui-label font-normal', selected ? 'text-foreground' : 'text-foreground/50')}>
+                                            {tUnsafe(entry.labelKey)}
+                                        </span>
+                                        {entry.badgeKey ? (
+                                            <span className="rounded border border-[var(--status-success-border)] bg-[var(--status-success-background)] px-1 text-[9px] font-medium uppercase leading-[14px] tracking-wide text-[var(--status-success)]">
+                                                {tUnsafe(entry.badgeKey)}
+                                            </span>
+                                        ) : null}
+                                    </div>
+                                    <div className="flex flex-col gap-1.5">
+                                        <RatingBar value={entry.accuracy} label={t('settings.voice.page.stt.meta.accuracy')} />
+                                        <RatingBar value={entry.speed} label={t('settings.voice.page.stt.meta.speed')} />
+                                        <span className="typography-ui-compact tabular-nums text-muted-foreground">{entry.size}</span>
+                                    </div>
+                                    {state?.downloadError ? (
+                                        <p className="typography-meta text-[var(--status-error)]">{state.downloadError}</p>
+                                    ) : null}
+                                </div>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1">
+                                {state?.installed ? (
+                                    <>
+                                        <Button
+                                            variant="ghost"
+                                            size="xs"
+                                            className="h-6 w-6 p-0 text-muted-foreground hover:text-[var(--status-error)]"
+                                            disabled={requestingId === entry.id}
+                                            onClick={() => { void handleDelete(entry.id); }}
+                                            title={t('settings.voice.page.stt.modelDelete')}
+                                            aria-label={t('settings.voice.page.stt.modelDelete')}
+                                        >
+                                            <Icon name="delete-bin" className="h-4 w-4" />
+                                        </Button>
+                                        <Icon
+                                            name="checkbox-circle"
+                                            className="h-4 w-4 flex-shrink-0 text-[var(--status-success)]"
+                                            aria-label={t('settings.voice.page.stt.modelInstalled')}
+                                        />
+                                    </>
+                                ) : state?.downloading ? (
+                                    <span className="flex items-center gap-1.5">
+                                        <Icon name="loader-4" className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                                        <span className="typography-ui-compact tabular-nums text-muted-foreground">
+                                            {typeof state.downloadProgress === 'number' ? `${state.downloadProgress}%` : ''}
+                                        </span>
                                     </span>
-                                ) : null}
-                            </div>
-                            <div className="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-0.5">
-                                <RatingBar value={entry.accuracy} label={t('settings.voice.page.stt.meta.accuracy')} />
-                                <RatingBar value={entry.speed} label={t('settings.voice.page.stt.meta.speed')} />
-                                <span className="typography-ui-compact tabular-nums text-muted-foreground">{entry.size}</span>
-                            </div>
-                            {state?.downloadError ? (
-                                <p className="mt-0.5 typography-meta text-[var(--status-error)]">{state.downloadError}</p>
-                            ) : null}
-                        </div>
-                        <div className="flex w-14 flex-shrink-0 items-center justify-end gap-1 pt-0.5">
-                            {state?.installed ? (
-                                <>
+                                ) : (
                                     <Button
                                         variant="ghost"
                                         size="xs"
-                                        className="h-6 w-6 p-0 text-muted-foreground hover:text-[var(--status-error)]"
+                                        className="h-6 w-6 p-0"
                                         disabled={requestingId === entry.id}
-                                        onClick={() => { void handleDelete(entry.id); }}
-                                        title={t('settings.voice.page.stt.modelDelete')}
-                                        aria-label={t('settings.voice.page.stt.modelDelete')}
+                                        onClick={() => { void handleDownload(entry.id); }}
+                                        title={t('settings.voice.page.stt.modelDownload')}
+                                        aria-label={t('settings.voice.page.stt.modelDownload')}
                                     >
-                                        <Icon name="delete-bin" className="h-4 w-4" />
+                                        <Icon name="download" className="h-4 w-4" />
                                     </Button>
-                                    <Icon
-                                        name="checkbox-circle"
-                                        className="h-4 w-4 flex-shrink-0 text-[var(--status-success)]"
-                                        aria-label={t('settings.voice.page.stt.modelInstalled')}
-                                    />
-                                </>
-                            ) : state?.downloading ? (
-                                <span className="flex items-center gap-1.5">
-                                    <Icon name="loader-4" className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                                    <span className="typography-ui-compact tabular-nums text-muted-foreground">
-                                        {typeof state.downloadProgress === 'number' ? `${state.downloadProgress}%` : ''}
-                                    </span>
-                                </span>
-                            ) : (
-                                <Button
-                                    variant="ghost"
-                                    size="xs"
-                                    className="h-6 w-6 p-0"
-                                    disabled={requestingId === entry.id}
-                                    onClick={() => { void handleDownload(entry.id); }}
-                                    title={t('settings.voice.page.stt.modelDownload')}
-                                    aria-label={t('settings.voice.page.stt.modelDownload')}
-                                >
-                                    <Icon name="download" className="h-4 w-4" />
-                                </Button>
-                            )}
+                                )}
+                            </div>
                         </div>
                     </div>
                 );
@@ -264,10 +291,32 @@ const KOKORO_VOICE_OPTIONS = [
 
 const LOCAL_TTS_MODEL_ID = 'kokoro-en-v0_19';
 
-const LocalTtsModelStatus = () => {
-    const { t } = useI18n();
-    const [model, setModel] = useState<DictationModelState | null>(null);
-    const [requesting, setRequesting] = useState(false);
+const KOKORO_MULTI_LANG_MODEL_ID = 'kokoro-multi-lang-v1_1';
+// A few named speakers out of the 103 in the Chinese/English Kokoro build.
+const KOKORO_MULTI_LANG_VOICE_OPTIONS = [
+    { id: 0, label: 'Maple (af)' },
+    { id: 1, label: 'Sol (af)' },
+    { id: 2, label: 'Vale (bf)' },
+    { id: 3, label: 'Xiaoxiao (zf)' },
+    { id: 58, label: 'Yunxi (zm)' },
+];
+
+interface LocalTtsVoiceOption {
+    modelId: string;
+    speakerId: number;
+    label: string;
+}
+
+const localTtsVoiceKey = (modelId: string, speakerId: number): string => `${modelId}:${speakerId}`;
+
+/**
+ * Local TTS models as the server reports them, plus the actions Settings
+ * offers on them. Shared by the model list and the voice picker so both see
+ * the same install state.
+ */
+const useLocalTtsModels = () => {
+    const [models, setModels] = useState<DictationModelState[]>([]);
+    const [requestingId, setRequestingId] = useState<string | null>(null);
 
     const refresh = useCallback(async () => {
         try {
@@ -276,11 +325,8 @@ const LocalTtsModelStatus = () => {
                 return;
             }
             const data = await response.json();
-            const entry = Array.isArray(data?.ttsModels)
-                ? data.ttsModels.find((m: DictationModelState) => m.id === LOCAL_TTS_MODEL_ID)
-                : null;
-            if (entry) {
-                setModel(entry);
+            if (Array.isArray(data?.ttsModels)) {
+                setModels(data.ttsModels);
             }
         } catch {
             // Display-only status; keep the previous state on fetch failure.
@@ -291,81 +337,118 @@ const LocalTtsModelStatus = () => {
         void refresh();
     }, [refresh]);
 
+    const anyDownloading = models.some((model) => model.downloading);
     useEffect(() => {
-        if (!model?.downloading) {
+        if (!anyDownloading) {
             return;
         }
         const interval = setInterval(() => {
             void refresh();
         }, 2000);
         return () => clearInterval(interval);
-    }, [model?.downloading, refresh]);
+    }, [anyDownloading, refresh]);
 
-    const request = async (method: 'POST' | 'DELETE') => {
-        setRequesting(true);
+    const request = useCallback(async (modelId: string, method: 'POST' | 'DELETE') => {
+        setRequestingId(modelId);
         try {
             const path = method === 'POST'
-                ? `/api/dictation/models/${LOCAL_TTS_MODEL_ID}/download`
-                : `/api/dictation/models/${LOCAL_TTS_MODEL_ID}`;
+                ? `/api/dictation/models/${modelId}/download`
+                : `/api/dictation/models/${modelId}`;
             await runtimeFetch(path, { method });
             await refresh();
         } catch {
             // Status refresh reports errors.
         } finally {
-            setRequesting(false);
+            setRequestingId(null);
         }
-    };
+    }, [refresh]);
 
-    if (!model) {
+    return { models, requestingId, request, refresh };
+};
+
+// Voices the picker offers: Kokoro speakers for the Kokoro models, one voice
+// per installed Piper model. Only installed models (plus the default) appear,
+// so a language model the server fetched on its own becomes selectable once
+// it is on disk.
+const buildLocalTtsVoiceOptions = (models: DictationModelState[]): LocalTtsVoiceOption[] => {
+    const options: LocalTtsVoiceOption[] = KOKORO_VOICE_OPTIONS.map((voice) => ({
+        modelId: LOCAL_TTS_MODEL_ID,
+        speakerId: voice.id,
+        label: voice.label,
+    }));
+    for (const model of models) {
+        if (model.id === LOCAL_TTS_MODEL_ID || !model.installed) continue;
+        if (model.id === KOKORO_MULTI_LANG_MODEL_ID) {
+            for (const voice of KOKORO_MULTI_LANG_VOICE_OPTIONS) {
+                options.push({ modelId: model.id, speakerId: voice.id, label: `${voice.label} · Kokoro zh/en` });
+            }
+            continue;
+        }
+        options.push({ modelId: model.id, speakerId: 0, label: model.description ?? model.id });
+    }
+    return options;
+};
+
+const LocalTtsModelStatus = ({ models, requestingId, request }: ReturnType<typeof useLocalTtsModels>) => {
+    const { t } = useI18n();
+
+    // The default English model is always listed; language models the server
+    // fetched on its own appear once they are installed or downloading, so
+    // the list shows what is on disk rather than the whole catalog.
+    const visible = models.filter((model) => model.id === LOCAL_TTS_MODEL_ID || model.installed || model.downloading);
+    if (visible.length === 0) {
         return null;
     }
 
     return (
-        <div className="flex items-center gap-2 py-1.5">
-            <span className="typography-ui-label text-foreground">Kokoro</span>
-            <span className="typography-ui-compact tabular-nums text-muted-foreground">305 MB</span>
-            {model.installed ? (
-                <>
-                    <Icon
-                        name="checkbox-circle"
-                        className="h-4 w-4 text-[var(--status-success)]"
-                        aria-label={t('settings.voice.page.stt.modelInstalled')}
-                    />
-                    <Button
-                        variant="ghost"
-                        size="xs"
-                        className="h-6 w-6 p-0 text-muted-foreground hover:text-[var(--status-error)]"
-                        disabled={requesting}
-                        onClick={() => { void request('DELETE'); }}
-                        title={t('settings.voice.page.stt.modelDelete')}
-                        aria-label={t('settings.voice.page.stt.modelDelete')}
-                    >
-                        <Icon name="delete-bin" className="h-4 w-4" />
-                    </Button>
-                </>
-            ) : model.downloading ? (
-                <span className="flex items-center gap-1.5">
-                    <Icon name="loader-4" className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                    <span className="typography-ui-compact tabular-nums text-muted-foreground">
-                        {typeof model.downloadProgress === 'number' ? `${model.downloadProgress}%` : ''}
-                    </span>
-                </span>
-            ) : (
-                <Button
-                    variant="ghost"
-                    size="xs"
-                    className="h-6 w-6 p-0"
-                    disabled={requesting}
-                    onClick={() => { void request('POST'); }}
-                    title={t('settings.voice.page.stt.modelDownload')}
-                    aria-label={t('settings.voice.page.stt.modelDownload')}
-                >
-                    <Icon name="download" className="h-4 w-4" />
-                </Button>
-            )}
-            {model.downloadError ? (
-                <span className="typography-meta text-[var(--status-error)]">{model.downloadError}</span>
-            ) : null}
+        <div className="flex flex-col">
+            {visible.map((model) => (
+                <div key={model.id} className="flex items-center gap-2 py-1.5">
+                    <span className="typography-ui-label text-foreground">{model.description ?? model.id}</span>
+                    {model.installed ? (
+                        <>
+                            <Icon
+                                name="checkbox-circle"
+                                className="h-4 w-4 text-[var(--status-success)]"
+                                aria-label={t('settings.voice.page.stt.modelInstalled')}
+                            />
+                            <Button
+                                variant="ghost"
+                                size="xs"
+                                className="h-6 w-6 p-0 text-muted-foreground hover:text-[var(--status-error)]"
+                                disabled={requestingId !== null}
+                                onClick={() => { void request(model.id, 'DELETE'); }}
+                                title={t('settings.voice.page.stt.modelDelete')}
+                                aria-label={t('settings.voice.page.stt.modelDelete')}
+                            >
+                                <Icon name="delete-bin" className="h-4 w-4" />
+                            </Button>
+                        </>
+                    ) : model.downloading ? (
+                        <span className="flex items-center gap-1.5">
+                            <Icon name="loader-4" className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                            <span className="typography-ui-compact tabular-nums text-muted-foreground">
+                                {typeof model.downloadProgress === 'number' ? `${model.downloadProgress}%` : ''}
+                            </span>
+                        </span>
+                    ) : (
+                        <Button
+                            variant="ghost"
+                            size="xs"
+                            className="h-6 w-6 p-0"
+                            disabled={requestingId !== null}
+                            onClick={() => { void request(model.id, 'POST'); }}
+                            title={t('settings.voice.page.stt.modelDownload')}
+                            aria-label={t('settings.voice.page.stt.modelDownload')}
+                        >
+                            <Icon name="download" className="h-4 w-4" />
+                        </Button>
+                    )}
+                    {model.downloadError ? (
+                        <span className="typography-meta text-[var(--status-error)]">{model.downloadError}</span>
+                    ) : null}
+                </div>
+            ))}
         </div>
     );
 };
@@ -400,6 +483,12 @@ export const VoiceSettings: React.FC = () => {
     const sayVoice = useConfigStore((state) => state.sayVoice);
     const setSayVoice = useConfigStore((state) => state.setSayVoice);
     const localTtsVoiceId = useConfigStore((state) => state.localTtsVoiceId);
+    const localTtsModelId = useConfigStore((state) => state.localTtsModelId);
+    const setLocalTtsModelId = useConfigStore((state) => state.setLocalTtsModelId);
+    const localTtsModels = useLocalTtsModels();
+    const localTtsVoiceOptions = useMemo(() => buildLocalTtsVoiceOptions(localTtsModels.models), [localTtsModels.models]);
+    const ttsFollowTextLanguage = useConfigStore((state) => state.ttsFollowTextLanguage);
+    const setTtsFollowTextLanguage = useConfigStore((state) => state.setTtsFollowTextLanguage);
     const setLocalTtsVoiceId = useConfigStore((state) => state.setLocalTtsVoiceId);
     const { speak: speakLocalTts, stop: stopLocalTts, isPlaying: isLocalTtsPlaying, error: localTtsError } = useLocalTTS();
 
@@ -408,13 +497,14 @@ export const VoiceSettings: React.FC = () => {
             stopLocalTts();
             return;
         }
-        const voiceLabel = KOKORO_VOICE_OPTIONS.find((v) => v.id === localTtsVoiceId)?.label
+        const voiceLabel = localTtsVoiceOptions.find((v) => v.modelId === localTtsModelId && v.speakerId === localTtsVoiceId)?.label
             ?? String(localTtsVoiceId);
         void speakLocalTts(t('settings.voice.page.preview.voiceLine', { voiceName: voiceLabel }), {
+            model: localTtsModelId,
             speakerId: localTtsVoiceId,
             speed: useConfigStore.getState().speechRate,
         });
-    }, [isLocalTtsPlaying, localTtsVoiceId, speakLocalTts, stopLocalTts, t]);
+    }, [isLocalTtsPlaying, localTtsModelId, localTtsVoiceId, localTtsVoiceOptions, speakLocalTts, stopLocalTts, t]);
     const browserVoice = useConfigStore((state) => state.browserVoice);
     const setBrowserVoice = useConfigStore((state) => state.setBrowserVoice);
     const openaiVoice = useConfigStore((state) => state.openaiVoice);
@@ -432,6 +522,8 @@ export const VoiceSettings: React.FC = () => {
     const showMessageTTSButtons = useConfigStore((state) => state.showMessageTTSButtons);
     const ttsInputMode = useConfigStore((state) => state.ttsInputMode);
     const setTtsInputMode = useConfigStore((state) => state.setTtsInputMode);
+    const ttsChunkedMode = useConfigStore((state) => state.ttsChunkedMode);
+    const setTtsChunkedMode = useConfigStore((state) => state.setTtsChunkedMode);
     // STT settings
     const sttProvider = useConfigStore((state) => state.sttProvider);
     const setSttProvider = useConfigStore((state) => state.setSttProvider);
@@ -455,6 +547,8 @@ export const VoiceSettings: React.FC = () => {
     const [previewAudio, setPreviewAudio] = useState<HTMLAudioElement | null>(null);
 
     const [isOpenAIAvailable, setIsOpenAIAvailable] = useState(false);
+    // The server refuses cloud speech and remote custom servers; this only explains why.
+    const [voiceEnterpriseMode, setVoiceEnterpriseMode] = useState(false);
     const [isOpenAIPreviewPlaying, setIsOpenAIPreviewPlaying] = useState(false);
     const [openaiPreviewAudio, setOpenaiPreviewAudio] = useState<HTMLAudioElement | null>(null);
 
@@ -548,7 +642,9 @@ export const VoiceSettings: React.FC = () => {
                 const data = await response.json();
                 const hasServerKey = data.available;
                 const hasSettingsKey = openaiApiKey.trim().length > 0;
-                setIsOpenAIAvailable(hasServerKey || hasSettingsKey);
+                const enterpriseMode = data.enterpriseMode === true;
+                setVoiceEnterpriseMode(enterpriseMode);
+                setIsOpenAIAvailable(!enterpriseMode && (hasServerKey || hasSettingsKey));
             } catch {
                 setIsOpenAIAvailable(openaiApiKey.trim().length > 0);
             }
@@ -759,124 +855,83 @@ export const VoiceSettings: React.FC = () => {
     const sliderClass = "flex-1 min-w-0 h-1.5 bg-[var(--interactive-border)] rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[var(--primary-base)] [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-[var(--primary-base)] [&::-moz-range-thumb]:border-0 disabled:opacity-50";
 
     return (
-        <div className="space-y-8">
+        <>
+            <SettingsSection
+                settingsItem="voice.playback"
+                title={t('settings.voice.page.section.playbackAndSummary')}
+                divider={false}
+                contentClassName="space-y-4"
+            >
+                <SettingsCheckboxRow
+                    checked={showMessageTTSButtons}
+                    onChange={setShowMessageTTSButtons}
+                    label={t('settings.voice.page.field.messageReadAloudButton')}
+                    ariaLabel={t('settings.voice.page.field.messageReadAloudButtonAria')}
+                />
 
-            {/* Playback (read messages aloud) */}
-            <div data-settings-item="voice.playback" className="mb-8">
-                <div className="mb-1 px-1">
-                    <h3 className="typography-ui-header font-medium text-foreground">
-                        {t('settings.voice.page.section.playbackAndSummary')}
-                    </h3>
-                </div>
+                {showMessageTTSButtons && (
+                    <>
+                        <SettingsControlGroup
+                            title={t('settings.voice.page.field.provider')}
+                            info={(
+                                <ul className="space-y-1">
+                                    <li><strong>{t('settings.voice.page.provider.browser')}</strong> {t('settings.voice.page.tooltip.browser')}</li>
+                                    <li><strong>{t('settings.voice.page.provider.local')}</strong> {t('settings.voice.page.tooltip.localTts')}</li>
+                                    <li><strong>{t('settings.voice.page.provider.openai')}</strong> {t('settings.voice.page.tooltip.openai')}</li>
+                                    <li><strong>{t('settings.voice.page.provider.custom')}</strong> {t('settings.voice.page.tooltip.custom')}</li>
+                                    <li><strong>{t('settings.voice.page.provider.say')}</strong> {t('settings.voice.page.tooltip.say')}</li>
+                                </ul>
+                            )}
+                        >
+                            <SettingsChipGroup
+                                value={voiceProvider}
+                                onChange={setVoiceProvider}
+                                aria-label={t('settings.voice.page.field.provider')}
+                                className="w-full gap-1.5 sm:gap-2"
+                                options={[
+                                    { value: 'browser', label: t('settings.voice.page.provider.browser') },
+                                    { value: 'local', label: t('settings.voice.page.provider.local') },
+                                    { value: 'openai', label: t('settings.voice.page.provider.openai') },
+                                    { value: 'openai-compatible', label: t('settings.voice.page.provider.custom') },
+                                    ...(isSayAvailable
+                                        ? [{
+                                            value: 'say' as const,
+                                            label: (
+                                                <>
+                                                    <Icon name="apple" className="mr-0.5 h-3.5 w-3.5" />
+                                                    {t('settings.voice.page.provider.say')}
+                                                </>
+                                            ),
+                                        }]
+                                        : []),
+                                ]}
+                            />
+                        </SettingsControlGroup>
 
-                <section className="px-2 pb-2 pt-0 space-y-0">
-
-                    <div
-                        className="group flex cursor-pointer items-center gap-2 py-1.5"
-                        role="button"
-                        tabIndex={0}
-                        aria-pressed={showMessageTTSButtons}
-                        onClick={() => setShowMessageTTSButtons(!showMessageTTSButtons)}
-                        onKeyDown={(e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); setShowMessageTTSButtons(!showMessageTTSButtons); } }}
-                    >
-                        <Checkbox checked={showMessageTTSButtons} onChange={setShowMessageTTSButtons} ariaLabel={t('settings.voice.page.field.messageReadAloudButtonAria')} />
-                        <span className="typography-ui-label text-foreground">{t('settings.voice.page.field.messageReadAloudButton')}</span>
-                    </div>
-
-                    {showMessageTTSButtons && (
-                        <>
-                            <div className="pb-1.5 pt-0.5">
-                                <div className="flex min-w-0 flex-col gap-1.5">
-                                    <div className="flex items-center gap-1.5">
-                                        <span className="typography-ui-label text-foreground">{t('settings.voice.page.field.provider')}</span>
-                                        <Tooltip>
-                                            <TooltipTrigger asChild>
-                                                <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-                                            </TooltipTrigger>
-                                            <TooltipContent sideOffset={8} className="max-w-xs">
-                                                <ul className="space-y-1">
-                                                    <li><strong>{t('settings.voice.page.provider.browser')}</strong> {t('settings.voice.page.tooltip.browser')}</li>
-                                                    <li><strong>{t('settings.voice.page.provider.local')}</strong> {t('settings.voice.page.tooltip.localTts')}</li>
-                                                    <li><strong>OpenAI:</strong> {t('settings.voice.page.tooltip.openai')}</li>
-                                                    <li><strong>{t('settings.voice.page.provider.custom')}</strong> {t('settings.voice.page.tooltip.custom')}</li>
-                                                    <li><strong>{t('settings.voice.page.provider.say')}</strong> {t('settings.voice.page.tooltip.say')}</li>
-                                                </ul>
-                                            </TooltipContent>
-                                        </Tooltip>
-                                    </div>
-                                    <div className="flex flex-wrap items-center gap-1">
-                                        <Button
-                                            variant="chip"
-                                            size="xs"
-                                            aria-pressed={voiceProvider === 'browser'}
-                                            onClick={() => setVoiceProvider('browser')}
-                                            className="!font-normal"
-                                        >
-                                            {t('settings.voice.page.provider.browser')}
-                                        </Button>
-                                        <Button
-                                            variant="chip"
-                                            size="xs"
-                                            aria-pressed={voiceProvider === 'local'}
-                                            onClick={() => setVoiceProvider('local')}
-                                            className="!font-normal"
-                                        >
-                                            {t('settings.voice.page.provider.local')}
-                                        </Button>
-                                        <Button
-                                            variant="chip"
-                                            size="xs"
-                                            aria-pressed={voiceProvider === 'openai'}
-                                            onClick={() => setVoiceProvider('openai')}
-                                            className="!font-normal"
-                                        >
-                                            OpenAI
-                                        </Button>
-                                        <Button
-                                            variant="chip"
-                                            size="xs"
-                                            aria-pressed={voiceProvider === 'openai-compatible'}
-                                            onClick={() => setVoiceProvider('openai-compatible')}
-                                            className="!font-normal"
-                                        >
-                                            {t('settings.voice.page.provider.custom')}
-                                        </Button>
-                                        {isSayAvailable && (
-                                            <Button
-                                                variant="chip"
-                                                size="xs"
-                                                aria-pressed={voiceProvider === 'say'}
-                                                onClick={() => setVoiceProvider('say')}
-                                                className="!font-normal"
-                                            >
-                                                <Icon name="apple" className="w-3.5 h-3.5 mr-0.5" />
-                                                {t('settings.voice.page.provider.say')}
-                                            </Button>
-                                        )}
-                                    </div>
-                                </div>
-                            </div>
+                            {voiceEnterpriseMode && (voiceProvider === 'openai' || voiceProvider === 'openai-compatible') && (
+                                <p className={SETTINGS_HELPER_CLASS}>{t('settings.voice.page.enterpriseMode')}</p>
+                            )}
 
                             {/* OpenAI API Key */}
                             {voiceProvider === 'openai' && (
-                                <div className="py-1.5">
-                                    <span className={cn("typography-ui-label text-foreground", !isOpenAIAvailable && "text-[var(--status-error)]")}>
+                                <div className="space-y-1.5">
+                                    <span className={cn(SETTINGS_FIELD_LABEL_CLASS, !isOpenAIAvailable && "text-[var(--status-error)]")}>
                                         {t('settings.voice.page.field.apiKey')}
                                     </span>
-                                    <span className={cn("typography-meta ml-2", !isOpenAIAvailable ? "text-[var(--status-error)]/80" : "text-muted-foreground")}>
+                                    <span className={cn(SETTINGS_HELPER_CLASS, !isOpenAIAvailable && "text-[var(--status-error)]/80")}>
                                         {isOpenAIAvailable && !openaiApiKey
                                           ? t('settings.voice.page.field.apiKeyHintUsingConfig')
                                           : !isOpenAIAvailable
                                             ? t('settings.voice.page.field.apiKeyHintRequired')
                                             : t('settings.voice.page.field.apiKeyHintProvide')}
                                     </span>
-                                    <div className="relative mt-1.5 max-w-xs">
+                                    <div className={cn('relative', SETTINGS_CONTROL_CLUSTER_CLASS)}>
                                         <input
                                             type="password"
                                             value={openaiApiKey}
                                             onChange={(e) => setOpenaiApiKey(e.target.value)}
                                             placeholder="sk-..."
-                                            className="w-full h-7 rounded-lg border border-input bg-transparent px-2 typography-ui-label text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/70"
+                                            className={VOICE_TEXT_INPUT_CLASS}
                                         />
                                         {openaiApiKey && (
                                             <button
@@ -893,21 +948,21 @@ export const VoiceSettings: React.FC = () => {
 
                             {/* OpenAI-compatible custom server */}
                             {voiceProvider === 'openai-compatible' && (
-                                <div className="py-1.5 space-y-2">
-                                    <div>
-                                        <span className={cn("typography-ui-label text-foreground", !openaiCompatibleUrl.trim() && "text-[var(--status-error)]")}>
-                                            {t('settings.voice.page.field.serverUrl')}
+                                <div className="space-y-3">
+                                    <div className="space-y-1.5">
+                                        <span className="flex items-center gap-1.5">
+                                            <span className={cn(SETTINGS_FIELD_LABEL_CLASS, !openaiCompatibleUrl.trim() && "text-[var(--status-error)]")}>
+                                                {t('settings.voice.page.field.serverUrl')}
+                                            </span>
+                                            <SettingsInfoHint>{t('settings.voice.page.field.serverUrlHint')}</SettingsInfoHint>
                                         </span>
-                                        <span className="typography-meta ml-2 text-muted-foreground">
-                                            {t('settings.voice.page.field.serverUrlHint')}
-                                        </span>
-                                        <div className="relative mt-1.5 max-w-xs">
+                                        <div className={cn('relative', SETTINGS_CONTROL_CLUSTER_CLASS)}>
                                             <input
                                                 type="text"
                                                 value={openaiCompatibleUrl}
                                                 onChange={(e) => setOpenaiCompatibleUrl(e.target.value)}
                                                 placeholder="http://localhost:8880/v1"
-                                                className="w-full h-7 rounded-lg border border-input bg-transparent px-2 typography-ui-label text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/70"
+                                                className={VOICE_TEXT_INPUT_CLASS}
                                             />
                                             {openaiCompatibleUrl && (
                                                 <button
@@ -920,18 +975,18 @@ export const VoiceSettings: React.FC = () => {
                                             )}
                                         </div>
                                     </div>
-                                    <div>
-                                        <span className="typography-ui-label text-foreground">API Key</span>
-                                        <span className="typography-meta ml-2 text-muted-foreground">
+                                    <div className="space-y-1.5">
+                                        <span className={SETTINGS_FIELD_LABEL_CLASS}>API Key</span>
+                                        <span className={SETTINGS_HELPER_CLASS}>
                                             Optional
                                         </span>
-                                        <div className="relative mt-1.5 max-w-xs">
+                                        <div className={cn('relative', SETTINGS_CONTROL_CLUSTER_CLASS)}>
                                             <input
                                                 type="password"
                                                 value={openaiCompatibleApiKey}
                                                 onChange={(e) => setOpenaiCompatibleApiKey(e.target.value)}
                                                 placeholder="sk-..."
-                                                className="w-full h-7 rounded-lg border border-input bg-transparent px-2 typography-ui-label text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/70"
+                                                className={VOICE_TEXT_INPUT_CLASS}
                                             />
                                             {openaiCompatibleApiKey && (
                                                 <button
@@ -944,31 +999,31 @@ export const VoiceSettings: React.FC = () => {
                                             )}
                                         </div>
                                     </div>
-                                    <div>
-                                        <span className="typography-ui-label text-foreground">{t('settings.voice.page.field.model')}</span>
-                                        <div className="relative mt-1.5 max-w-xs">
+                                    <div className="space-y-1.5">
+                                        <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.voice.page.field.model')}</span>
+                                        <div className={cn('relative', SETTINGS_CONTROL_CLUSTER_CLASS)}>
                                             <input
                                                 type="text"
                                                 value={openaiCompatibleTtsModel}
                                                 onChange={(e) => setOpenaiCompatibleTtsModel(e.target.value)}
                                                 placeholder="speaches-ai/Kokoro-82M-v1.0-ONNX"
-                                                className="w-full h-7 rounded-lg border border-input bg-transparent px-2 typography-ui-label text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/70"
+                                                className={VOICE_TEXT_INPUT_CLASS}
                                             />
                                         </div>
                                     </div>
-                                    <div>
-                                        <span className="typography-ui-label text-foreground">{t('settings.voice.page.field.voice')}</span>
-                                        <span className="typography-meta ml-2 text-muted-foreground">
-                                            {t('settings.voice.page.field.voiceIdentifierHint')}
+                                    <div className="space-y-1.5">
+                                        <span className="flex items-center gap-1.5">
+                                            <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.voice.page.field.voice')}</span>
+                                            <SettingsInfoHint>{t('settings.voice.page.field.voiceIdentifierHint')}</SettingsInfoHint>
                                         </span>
-                                        <div className="flex items-center gap-2 mt-1.5">
-                                            <div className="relative max-w-xs flex-1">
+                                        <div className={cn('flex items-center gap-2', SETTINGS_CONTROL_CLUSTER_CLASS)}>
+                                            <div className="relative min-w-0 flex-1">
                                                 <input
                                                     type="text"
                                                     value={openaiCompatibleVoice}
                                                     onChange={(e) => setOpenaiCompatibleVoice(e.target.value)}
                                                     placeholder="af_sky"
-                                                    className="w-full h-7 rounded-lg border border-input bg-transparent px-2 typography-ui-label text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/70"
+                                                    className={VOICE_TEXT_INPUT_CLASS}
                                                 />
                                             </div>
                                             <Button size="xs" variant="ghost" onClick={previewCompatibleVoice} title={t('settings.voice.page.actions.preview')} disabled={!openaiCompatibleUrl.trim()}>
@@ -980,26 +1035,39 @@ export const VoiceSettings: React.FC = () => {
                             )}
 
                             {/* Local (Kokoro) TTS model status */}
-                            {voiceProvider === 'local' && <LocalTtsModelStatus />}
+                            {voiceProvider === 'local' && <LocalTtsModelStatus {...localTtsModels} />}
+
+                            {(voiceProvider === 'local' || voiceProvider === 'say') && (
+                                <SettingsCheckboxRow
+                                    checked={ttsFollowTextLanguage}
+                                    onChange={setTtsFollowTextLanguage}
+                                    label={t('settings.voice.page.field.followTextLanguage')}
+                                    ariaLabel={t('settings.voice.page.field.followTextLanguageAria')}
+                                    info={t('settings.voice.page.field.followTextLanguageInfo')}
+                                />
+                            )}
 
                             {/* Voice Selection */}
-                            <div className="flex items-center gap-8 py-1.5">
-                                <span className="typography-ui-label text-foreground sm:w-56 shrink-0">{t('settings.voice.page.field.voice')}</span>
-                                <div className="flex items-center gap-2 w-fit">
+                            <SettingsFieldRow label={t('settings.voice.page.field.voice')}>
                                     {voiceProvider === 'local' && (
                                         <>
                                             <Select
-                                                value={String(localTtsVoiceId)}
-                                                onValueChange={(value) => setLocalTtsVoiceId(Number.parseInt(value, 10) || 0)}
+                                                value={localTtsVoiceKey(localTtsModelId, localTtsVoiceId)}
+                                                onValueChange={(value) => {
+                                                    const option = localTtsVoiceOptions.find((v) => localTtsVoiceKey(v.modelId, v.speakerId) === value);
+                                                    if (!option) return;
+                                                    setLocalTtsModelId(option.modelId);
+                                                    setLocalTtsVoiceId(option.speakerId);
+                                                }}
                                             >
-                                                <SelectTrigger className="w-fit">
+                                                <SelectTrigger size={SETTINGS_SELECT_SIZE} className={SETTINGS_SELECT_ROW_TRIGGER_CLASS}>
                                                     <SelectValue placeholder={t('settings.voice.page.field.selectVoicePlaceholder')}>
-                                                        {(value) => KOKORO_VOICE_OPTIONS.find((v) => String(v.id) === value)?.label ?? value}
+                                                        {(value) => localTtsVoiceOptions.find((v) => localTtsVoiceKey(v.modelId, v.speakerId) === value)?.label ?? value}
                                                     </SelectValue>
                                                 </SelectTrigger>
                                                 <SelectContent>
-                                                    {KOKORO_VOICE_OPTIONS.map((v) => (
-                                                        <SelectItem key={v.id} value={String(v.id)}>{v.label}</SelectItem>
+                                                    {localTtsVoiceOptions.map((v) => (
+                                                        <SelectItem key={localTtsVoiceKey(v.modelId, v.speakerId)} value={localTtsVoiceKey(v.modelId, v.speakerId)}>{v.label}</SelectItem>
                                                     ))}
                                                 </SelectContent>
                                             </Select>
@@ -1015,7 +1083,7 @@ export const VoiceSettings: React.FC = () => {
                                     {voiceProvider === 'openai' && isOpenAIAvailable && (
                                         <>
                                             <Select value={openaiVoice} onValueChange={setOpenaiVoice}>
-                                                <SelectTrigger className="w-fit">
+                                                <SelectTrigger size={SETTINGS_SELECT_SIZE} className={SETTINGS_SELECT_ROW_TRIGGER_CLASS}>
                                                     <SelectValue placeholder={t('settings.voice.page.field.selectVoicePlaceholder')} />
                                                 </SelectTrigger>
                                                 <SelectContent>
@@ -1031,13 +1099,13 @@ export const VoiceSettings: React.FC = () => {
                                     )}
 
                                     {voiceProvider === 'openai-compatible' && (
-                                        <span className="typography-meta text-muted-foreground">{t('settings.voice.page.field.configuredAbove')}</span>
+                                        <span className={SETTINGS_HELPER_CLASS}>{t('settings.voice.page.field.configuredAbove')}</span>
                                     )}
 
                                     {voiceProvider === 'say' && isSayAvailable && sayVoices.length > 0 && (
                                         <>
                                             <Select value={sayVoice} onValueChange={setSayVoice}>
-                                                <SelectTrigger className="w-fit">
+                                                <SelectTrigger size={SETTINGS_SELECT_SIZE} className={SETTINGS_SELECT_ROW_TRIGGER_CLASS}>
                                                     <SelectValue placeholder={t('settings.voice.page.field.selectVoicePlaceholder')} />
                                                 </SelectTrigger>
                                                 <SelectContent>
@@ -1055,7 +1123,7 @@ export const VoiceSettings: React.FC = () => {
                                     {voiceProvider === 'browser' && filteredBrowserVoices.length > 0 && (
                                         <>
                                             <Select value={browserVoice || '$auto'} onValueChange={(value) => setBrowserVoice(value === '$auto' ? '' : value)}>
-                                                <SelectTrigger className="w-fit max-w-[200px]">
+                                                <SelectTrigger size={SETTINGS_SELECT_SIZE} className={SETTINGS_SELECT_ROW_TRIGGER_CLASS}>
                                                     <SelectValue placeholder={t('settings.voice.page.field.auto')} />
                                                 </SelectTrigger>
                                                 <SelectContent>
@@ -1070,170 +1138,117 @@ export const VoiceSettings: React.FC = () => {
                                             </Button>
                                         </>
                                     )}
-                                </div>
-                            </div>
+                            </SettingsFieldRow>
 
                             {/* Speech Rate */}
-                            <div className="flex items-center gap-8 py-1.5">
-                                <span className="typography-ui-label text-foreground sm:w-56 shrink-0">{t('settings.voice.page.field.speechRate')}</span>
-                                <div className="flex items-center gap-2 w-fit">
+                            <SettingsFieldRow label={t('settings.voice.page.field.speechRate')}>
                                     {!isMobile && <input type="range" min={0.5} max={2} step={0.1} value={speechRate} onChange={(e) => setSpeechRate(Number(e.target.value))} className={sliderClass} />}
-                                    <NumberInput value={speechRate} onValueChange={setSpeechRate} min={0.5} max={2} step={0.1} className="w-16 tabular-nums" />
-                                </div>
-                            </div>
+                                    <NumberInput value={speechRate} onValueChange={setSpeechRate} min={0.5} max={2} step={0.1} className={cn(SETTINGS_NUMBER_INPUT_CLASS, 'tabular-nums')} />
+                            </SettingsFieldRow>
 
                             {/* Speech Pitch */}
-                            <div className="flex items-center gap-8 py-1.5">
-                                <span className="typography-ui-label text-foreground sm:w-56 shrink-0">{t('settings.voice.page.field.speechPitch')}</span>
-                                <div className="flex items-center gap-2 w-fit">
+                            <SettingsFieldRow label={t('settings.voice.page.field.speechPitch')}>
                                     {!isMobile && <input type="range" min={0.5} max={2} step={0.1} value={speechPitch} onChange={(e) => setSpeechPitch(Number(e.target.value))} className={sliderClass} />}
-                                    <NumberInput value={speechPitch} onValueChange={setSpeechPitch} min={0.5} max={2} step={0.1} className="w-16 tabular-nums" />
-                                </div>
-                            </div>
+                                    <NumberInput value={speechPitch} onValueChange={setSpeechPitch} min={0.5} max={2} step={0.1} className={cn(SETTINGS_NUMBER_INPUT_CLASS, 'tabular-nums')} />
+                            </SettingsFieldRow>
 
                             {/* Speech Volume */}
-                            <div className="flex items-center gap-8 py-1.5">
-                                <span className="typography-ui-label text-foreground sm:w-56 shrink-0">{t('settings.voice.page.field.speechVolume')}</span>
-                                <div className="flex items-center gap-2 w-fit">
+                            <SettingsFieldRow label={t('settings.voice.page.field.speechVolume')}>
                                     {!isMobile && <input type="range" min={0} max={1} step={0.1} value={speechVolume} onChange={(e) => setSpeechVolume(Number(e.target.value))} className={sliderClass} />}
                                     {isMobile ? (
-                                        <NumberInput value={Math.round(speechVolume * 100)} onValueChange={(v) => setSpeechVolume(v / 100)} min={0} max={100} step={10} className="w-16 tabular-nums" />
+                                        <NumberInput value={Math.round(speechVolume * 100)} onValueChange={(v) => setSpeechVolume(v / 100)} min={0} max={100} step={10} className={cn(SETTINGS_NUMBER_INPUT_CLASS, 'tabular-nums')} />
                                     ) : (
                                         <span className="typography-ui-label text-foreground tabular-nums min-w-[3rem] text-right">
                                             {Math.round(speechVolume * 100)}%
                                         </span>
                                     )}
-                                </div>
-                            </div>
+                            </SettingsFieldRow>
 
-                            {/* TTS input mode */}
-                            <div className="pb-1.5 pt-0.5">
-                                <div className="flex min-w-0 flex-col gap-1.5">
-                                    <div className="flex items-center gap-1.5">
-                                        <span className="typography-ui-label text-foreground">
-                                            {t('settings.voice.page.field.ttsInputMode')}
-                                        </span>
-                                    </div>
-                                    <div className="flex flex-wrap items-center gap-1">
-                                        <Button
-                                            variant="chip"
-                                            size="xs"
-                                            aria-pressed={ttsInputMode === 'sanitized'}
-                                            onClick={() => setTtsInputMode('sanitized')}
-                                            className="!font-normal"
-                                        >
-                                            {t('settings.voice.page.field.ttsInputModeSanitized')}
-                                        </Button>
-                                        <Button
-                                            variant="chip"
-                                            size="xs"
-                                            aria-pressed={ttsInputMode === 'raw'}
-                                            onClick={() => setTtsInputMode('raw')}
-                                            className="!font-normal"
-                                        >
-                                            {t('settings.voice.page.field.ttsInputModeRaw')}
-                                        </Button>
-                                        <Button
-                                            variant="chip"
-                                            size="xs"
-                                            aria-pressed={ttsInputMode === 'summarized'}
-                                            onClick={() => setTtsInputMode('summarized')}
-                                            className="!font-normal"
-                                        >
-                                            {t('settings.voice.page.field.ttsInputModeSummarized')}
-                                        </Button>
-                                    </div>
-                                </div>
-                            </div>
-                        </>
-                    )}
-                </section>
-            </div>
+                            <SettingsControlGroup title={t('settings.voice.page.field.ttsInputMode')}>
+                                <SettingsChipGroup
+                                    value={ttsInputMode}
+                                    onChange={setTtsInputMode}
+                                    aria-label={t('settings.voice.page.field.ttsInputMode')}
+                                    className="w-full gap-1.5 sm:gap-2"
+                                    options={[
+                                        { value: 'sanitized', label: t('settings.voice.page.field.ttsInputModeSanitized') },
+                                        { value: 'raw', label: t('settings.voice.page.field.ttsInputModeRaw') },
+                                        { value: 'summarized', label: t('settings.voice.page.field.ttsInputModeSummarized') },
+                                    ]}
+                                />
+                            </SettingsControlGroup>
 
-            {/* Speech Recognition */}
-            <div data-settings-item="voice.speech-recognition" className="mb-8">
-                    <div className="mb-1 px-1">
-                        <h3 className="typography-ui-header font-medium text-foreground">
-                            {t('settings.voice.page.section.speechRecognition')}
-                        </h3>
-                    </div>
+                            {(voiceProvider === 'openai' || voiceProvider === 'openai-compatible') && (
+                                <SettingsCheckboxRow
+                                    checked={ttsChunkedMode}
+                                    onChange={setTtsChunkedMode}
+                                    label={t('settings.voice.page.field.ttsChunkedMode')}
+                                    ariaLabel={t('settings.voice.page.field.ttsChunkedModeAria')}
+                                    info={t('settings.voice.page.tooltip.ttsChunked')}
+                                />
+                            )}
+                    </>
+                )}
+            </SettingsSection>
 
-                    <section className="px-2 pb-2 pt-0 space-y-0">
-                        <div
-                            className="group flex cursor-pointer items-center gap-2 py-1.5"
-                            role="button"
-                            tabIndex={0}
-                            aria-pressed={dictationEnabled}
-                            onClick={() => setDictationEnabled(!dictationEnabled)}
-                            onKeyDown={(e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); setDictationEnabled(!dictationEnabled); } }}
+            <SettingsSection
+                settingsItem="voice.speech-recognition"
+                title={t('settings.voice.page.section.speechRecognition')}
+                contentClassName="space-y-4"
+            >
+                <SettingsCheckboxRow
+                    checked={dictationEnabled}
+                    onChange={setDictationEnabled}
+                    label={t('settings.voice.page.field.enableVoiceInput')}
+                    ariaLabel={t('settings.voice.page.field.enableVoiceInputAria')}
+                />
+
+                {dictationEnabled && (
+                    <>
+                        <SettingsControlGroup
+                            title={t('settings.voice.page.field.provider')}
+                            info={(
+                                <ul className="space-y-1">
+                                    <li><strong>{t('settings.voice.page.provider.local')}</strong> {t('settings.voice.page.tooltip.sttLocal')}</li>
+                                    <li><strong>{t('settings.voice.page.provider.server')}</strong> {t('settings.voice.page.tooltip.sttServer')}</li>
+                                </ul>
+                            )}
                         >
-                            <Checkbox checked={dictationEnabled} onChange={setDictationEnabled} ariaLabel={t('settings.voice.page.field.enableVoiceInputAria')} />
-                            <span className="typography-ui-label text-foreground">{t('settings.voice.page.field.enableVoiceInput')}</span>
-                        </div>
-
-                        {dictationEnabled && (<>
-                        <div className="pb-1.5 pt-0.5">
-                            <div className="flex min-w-0 flex-col gap-1.5">
-                                <div className="flex items-center gap-1.5">
-                                    <span className="typography-ui-label text-foreground">{t('settings.voice.page.field.provider')}</span>
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-                                        </TooltipTrigger>
-                                        <TooltipContent sideOffset={8} className="max-w-xs">
-                                            <ul className="space-y-1">
-                                                <li><strong>{t('settings.voice.page.provider.local')}</strong> {t('settings.voice.page.tooltip.sttLocal')}</li>
-                                                <li><strong>{t('settings.voice.page.provider.server')}</strong> {t('settings.voice.page.tooltip.sttServer')}</li>
-                                            </ul>
-                                        </TooltipContent>
-                                    </Tooltip>
-                                </div>
-                                <div className="flex flex-wrap items-center gap-1">
-                                    <Button
-                                        variant="chip"
-                                        size="xs"
-                                        aria-pressed={sttProvider === 'local'}
-                                        onClick={() => setSttProvider('local')}
-                                        className="!font-normal"
-                                    >
-                                        {t('settings.voice.page.provider.local')}
-                                    </Button>
-                                    <Button
-                                        variant="chip"
-                                        size="xs"
-                                        aria-pressed={sttProvider === 'openai-compatible'}
-                                        onClick={() => setSttProvider('openai-compatible')}
-                                        className="!font-normal"
-                                    >
-                                        {t('settings.voice.page.provider.server')}
-                                    </Button>
-                                </div>
-                            </div>
-                        </div>
+                            <SettingsChipGroup
+                                value={sttProvider}
+                                onChange={setSttProvider}
+                                aria-label={t('settings.voice.page.field.provider')}
+                                className="w-full gap-1.5 sm:gap-2"
+                                options={[
+                                    { value: 'local', label: t('settings.voice.page.provider.local') },
+                                    { value: 'openai-compatible', label: t('settings.voice.page.provider.server') },
+                                ]}
+                            />
+                        </SettingsControlGroup>
 
                         {sttProvider === 'local' && (
-                            <div className="py-1.5">
-                                <span className="typography-ui-label text-foreground">{t('settings.voice.page.field.model')}</span>
+                            <div className="space-y-1.5">
+                                <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.voice.page.field.model')}</span>
                                 <LocalModelPicker selectedModelId={sttLocalModel} onSelect={setSttLocalModel} />
                             </div>
                         )}
 
                         {sttProvider === 'openai-compatible' && (
-                            <div className="py-1.5 space-y-2">
-                                <div>
-                                    <span className={cn("typography-ui-label text-foreground", !sttServerUrl.trim() && "text-[var(--status-error)]")}>
-                                        {t('settings.voice.page.field.serverUrl')}
+                            <div className="space-y-3">
+                                <div className="space-y-1.5">
+                                    <span className="flex items-center gap-1.5">
+                                        <span className={cn(SETTINGS_FIELD_LABEL_CLASS, !sttServerUrl.trim() && "text-[var(--status-error)]")}>
+                                            {t('settings.voice.page.field.serverUrl')}
+                                        </span>
+                                        <SettingsInfoHint>{t('settings.voice.page.field.sttServerUrlHint')}</SettingsInfoHint>
                                     </span>
-                                    <span className="typography-meta ml-2 text-muted-foreground">
-                                        {t('settings.voice.page.field.sttServerUrlHint')}
-                                    </span>
-                                    <div className="relative mt-1.5 max-w-xs">
+                                    <div className={cn('relative', SETTINGS_CONTROL_CLUSTER_CLASS)}>
                                         <input
                                             type="text"
                                             value={sttServerUrl}
                                             onChange={(e) => setSttServerUrl(e.target.value)}
                                             placeholder="http://localhost:8001/v1"
-                                            className="w-full h-7 rounded-lg border border-input bg-transparent px-2 typography-ui-label text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/70"
+                                            className={VOICE_TEXT_INPUT_CLASS}
                                         />
                                         {sttServerUrl && (
                                             <button
@@ -1246,18 +1261,18 @@ export const VoiceSettings: React.FC = () => {
                                         )}
                                     </div>
                                 </div>
-                                <div>
-                                    <span className="typography-ui-label text-foreground">API Key</span>
-                                    <span className="typography-meta ml-2 text-muted-foreground">
+                                <div className="space-y-1.5">
+                                    <span className={SETTINGS_FIELD_LABEL_CLASS}>API Key</span>
+                                    <span className={SETTINGS_HELPER_CLASS}>
                                         Optional
                                     </span>
-                                    <div className="relative mt-1.5 max-w-xs">
+                                    <div className={cn('relative', SETTINGS_CONTROL_CLUSTER_CLASS)}>
                                         <input
                                             type="password"
                                             value={sttApiKey}
                                             onChange={(e) => setSttApiKey(e.target.value)}
                                             placeholder="sk-..."
-                                            className="w-full h-7 rounded-lg border border-input bg-transparent px-2 typography-ui-label text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/70"
+                                            className={VOICE_TEXT_INPUT_CLASS}
                                         />
                                         {sttApiKey && (
                                             <button
@@ -1270,41 +1285,38 @@ export const VoiceSettings: React.FC = () => {
                                         )}
                                     </div>
                                 </div>
-                                <div>
-                                    <span className="typography-ui-label text-foreground">{t('settings.voice.page.field.model')}</span>
-                                    <div className="relative mt-1.5 max-w-xs">
+                                <div className="space-y-1.5">
+                                    <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.voice.page.field.model')}</span>
+                                    <div className={cn('relative', SETTINGS_CONTROL_CLUSTER_CLASS)}>
                                         <input
                                             type="text"
                                             value={sttModel}
                                             onChange={(e) => setSttModel(e.target.value)}
                                             placeholder="deepdml/faster-whisper-large-v3-turbo-ct2"
-                                            className="w-full h-7 rounded-lg border border-input bg-transparent px-2 typography-ui-label text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/70"
+                                            className={VOICE_TEXT_INPUT_CLASS}
                                         />
                                     </div>
                                 </div>
-                                <div>
-                                    <span className="typography-ui-label text-foreground">{t('settings.voice.page.field.language')}</span>
-                                    <span className="typography-meta ml-2 text-muted-foreground">
-                                        {t('settings.voice.page.field.sttLanguageHint')}
+                                <div className="space-y-1.5">
+                                    <span className="flex items-center gap-1.5">
+                                        <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.voice.page.field.language')}</span>
+                                        <SettingsInfoHint>{t('settings.voice.page.field.sttLanguageHint')}</SettingsInfoHint>
                                     </span>
-                                    <div className="relative mt-1.5 max-w-[8rem]">
+                                    <div className="relative max-w-[8rem]">
                                         <input
                                             type="text"
                                             value={sttLanguage}
                                             onChange={(e) => setSttLanguage(e.target.value)}
                                             placeholder="auto"
-                                            className="w-full h-7 rounded-lg border border-input bg-transparent px-2 typography-ui-label text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/70"
+                                            className={VOICE_TEXT_INPUT_CLASS}
                                         />
                                     </div>
                                 </div>
                             </div>
                         )}
-
-                        </>)}
-                    </section>
-            </div>
-
-
-        </div>
+                    </>
+                )}
+            </SettingsSection>
+        </>
     );
 };

@@ -1,4 +1,5 @@
 export type OpenChamberSection =
+  | 'general'
   | 'visual'
   | 'chat'
   | 'shortcuts'
@@ -7,4 +8,5 @@ export type OpenChamberSection =
   | 'github'
   | 'notifications'
   | 'voice'
-  | 'tunnel';
+  | 'tunnel'
+  | 'spaces';

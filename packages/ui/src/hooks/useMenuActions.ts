@@ -4,12 +4,14 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { getSyncSessions } from '@/sync/sync-refs';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
-import { useUIStore } from '@/stores/useUIStore';
+import { normalizeContextPanelDirectoryKey, useUIStore } from '@/stores/useUIStore';
 import { useUpdateStore } from '@/stores/useUpdateStore';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { createWorktreeSession } from '@/lib/worktreeSessionCreator';
 import { showOpenCodeStatus } from '@/lib/openCodeStatus';
+import { addSelectionToChat } from '@/lib/addSelectionToChat';
+import { navigateSessionHistory } from '@/lib/sessionNavigationHistory';
 
 const getActiveElementSelectedText = (): string => {
   if (typeof document === 'undefined') {
@@ -77,6 +79,7 @@ type MenuAction =
   | 'toggle-terminal'
   | 'toggle-terminal-expanded'
   | 'copy'
+  | 'add-selection-to-chat'
   | 'theme-light'
   | 'theme-dark'
   | 'theme-system'
@@ -100,14 +103,8 @@ export const useMenuActions = (
   const toggleHelpDialog = useUIStore((s) => s.toggleHelpDialog);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const setSessionSwitcherOpen = useUIStore((s) => s.setSessionSwitcherOpen);
-  const setActiveMainTab = useUIStore((s) => s.setActiveMainTab);
   const setSettingsDialogOpen = useUIStore((s) => s.setSettingsDialogOpen);
   const setAboutDialogOpen = useUIStore((s) => s.setAboutDialogOpen);
-  const toggleRightSidebar = useUIStore((s) => s.toggleRightSidebar);
-  const setRightSidebarOpen = useUIStore((s) => s.setRightSidebarOpen);
-  const setRightSidebarTab = useUIStore((s) => s.setRightSidebarTab);
-  const toggleBottomTerminal = useUIStore((s) => s.toggleBottomTerminal);
-  const setBottomTerminalExpanded = useUIStore((s) => s.setBottomTerminalExpanded);
   const checkForUpdates = useUpdateStore((state) => state.checkForUpdates);
   const { setThemeMode } = useThemeSystem();
   const checkUpdatesInFlightRef = React.useRef(false);
@@ -154,10 +151,9 @@ export const useMenuActions = (
     const nextSession = sessions[nextIndex];
     if (!nextSession) return;
 
-    setActiveMainTab('chat');
     setSessionSwitcherOpen(false);
     useSessionUIStore.getState().setCurrentSession(nextSession.id);
-  }, [setActiveMainTab, setSessionSwitcherOpen]);
+  }, [setSessionSwitcherOpen]);
 
   const navigateProject = React.useCallback((direction: -1 | 1) => {
     const { activeProjectId, projects, setActiveProject } = useProjectsStore.getState();
@@ -194,14 +190,18 @@ export const useMenuActions = (
           break;
 
         case 'new-session':
-          setActiveMainTab('chat');
-          setSessionSwitcherOpen(false);
-          openNewSessionDraft();
+                setSessionSwitcherOpen(false);
+          {
+            const sessionState = useSessionUIStore.getState();
+            const directory = useDirectoryStore.getState().currentDirectory;
+            openNewSessionDraft(sessionState.currentSessionId && directory
+              ? { directoryOverride: directory }
+              : undefined);
+          }
           break;
 
         case 'new-worktree-session':
-          setActiveMainTab('chat');
-          setSessionSwitcherOpen(false);
+                setSessionSwitcherOpen(false);
           createWorktreeSession();
           break;
 
@@ -209,27 +209,58 @@ export const useMenuActions = (
           handleChangeWorkspace();
           break;
 
-        case 'toggle-right-sidebar':
-          toggleRightSidebar();
+        // Legacy right-sidebar menu items now target the context surfaces
+        // that replaced the sidebar's tabs.
+        case 'toggle-right-sidebar': {
+          const directory = useDirectoryStore.getState().currentDirectory;
+          if (!directory) break;
+          const uiState = useUIStore.getState();
+          const directoryKey = normalizeContextPanelDirectoryKey(directory);
+          const panelState = uiState.contextPanelByDirectory[directoryKey];
+          if (panelState?.isOpen) {
+            uiState.closeContextPanel(directoryKey);
+          } else if (panelState?.activeTabId) {
+            uiState.setActiveContextPanelTab(directoryKey, panelState.activeTabId);
+          } else {
+            uiState.openContextSurface(directoryKey, 'git');
+          }
           break;
+        }
 
-        case 'open-right-sidebar-git':
-          setRightSidebarOpen(true);
-          setRightSidebarTab('git');
+        case 'open-right-sidebar-git': {
+          const directory = useDirectoryStore.getState().currentDirectory;
+          if (!directory) break;
+          useUIStore.getState().openContextSurface(normalizeContextPanelDirectoryKey(directory), 'git');
           break;
+        }
 
-        case 'open-right-sidebar-files':
-          setRightSidebarOpen(true);
-          setRightSidebarTab('files');
+        case 'open-right-sidebar-files': {
+          const directory = useDirectoryStore.getState().currentDirectory;
+          if (!directory) break;
+          useUIStore.getState().openContextSurface(normalizeContextPanelDirectoryKey(directory), 'file');
           break;
+        }
 
-        case 'toggle-terminal':
-          toggleBottomTerminal();
+        case 'toggle-terminal': {
+          const directory = useDirectoryStore.getState().currentDirectory;
+          if (!directory) break;
+          useUIStore.getState().openContextSurface(normalizeContextPanelDirectoryKey(directory), 'terminal');
           break;
+        }
 
-        case 'toggle-terminal-expanded':
-          setBottomTerminalExpanded(!useUIStore.getState().isBottomTerminalExpanded);
+        case 'toggle-terminal-expanded': {
+          const directory = useDirectoryStore.getState().currentDirectory;
+          if (!directory) break;
+          const key = normalizeContextPanelDirectoryKey(directory);
+          const uiState = useUIStore.getState();
+          const panel = uiState.contextPanelByDirectory[key];
+          const activeMode = panel?.isOpen ? panel.tabs.find((tab) => tab.id === panel.activeTabId)?.mode : null;
+          if (activeMode !== 'terminal') {
+            uiState.openContextSurface(key, 'terminal');
+          }
+          uiState.toggleContextPanelExpanded(key);
           break;
+        }
 
         case 'copy': {
           const copyEvent = new Event('openchamber:copy', { cancelable: true });
@@ -252,6 +283,10 @@ export const useMenuActions = (
           setThemeMode('system');
           break;
 
+        case 'add-selection-to-chat':
+          addSelectionToChat();
+          break;
+
         case 'toggle-sidebar':
           toggleSidebar();
           break;
@@ -260,12 +295,14 @@ export const useMenuActions = (
           onToggleMemoryDebug?.();
           break;
 
+        // Same history as the Back/Forward shortcuts, which this menu's
+        // accelerators shadow on Windows and Linux.
         case 'go-back':
-          useDirectoryStore.getState().goBack();
+          navigateSessionHistory(-1);
           break;
 
         case 'go-forward':
-          useDirectoryStore.getState().goForward();
+          navigateSessionHistory(1);
           break;
 
         case 'previous-session':
@@ -303,18 +340,12 @@ export const useMenuActions = (
       onToggleMemoryDebug,
       openNewSessionDraft,
       setAboutDialogOpen,
-      setActiveMainTab,
       setSessionSwitcherOpen,
       setCommandPaletteOpen,
       setSettingsDialogOpen,
-      setBottomTerminalExpanded,
-      setRightSidebarOpen,
-      setRightSidebarTab,
       setThemeMode,
-      toggleBottomTerminal,
       toggleCommandPalette,
       toggleHelpDialog,
-      toggleRightSidebar,
       toggleSidebar,
     ]
   );

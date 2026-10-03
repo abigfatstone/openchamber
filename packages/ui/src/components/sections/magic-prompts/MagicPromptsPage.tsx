@@ -2,8 +2,6 @@ import React from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Icon } from "@/components/icon/Icon";
 import {
   fetchMagicPromptOverrides,
   getDefaultMagicPromptTemplate,
@@ -15,6 +13,9 @@ import {
 } from '@/lib/magicPrompts';
 import { useMagicPromptsStore } from '@/stores/useMagicPromptsStore';
 import { useI18n } from '@/lib/i18n';
+import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
+import { SettingsSection } from '@/components/sections/shared/SettingsSection';
+import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 
 type PromptBlock = {
   id: MagicPromptId;
@@ -44,44 +45,12 @@ const PROMPT_PAGE_MAP: Record<string, PromptPageConfig> = {
       { id: 'git.pr.generate.instructions', titleKey: 'settings.magicPrompts.page.block.instructions' },
     ],
   },
-  'github.pr.review': {
-    titleKey: 'settings.magicPrompts.page.group.githubPrReview.title',
-    descriptionKey: 'settings.magicPrompts.page.group.githubPrReview.description',
+  'linear.issue.review': {
+    titleKey: 'settings.magicPrompts.page.group.linearIssueReview.title',
+    descriptionKey: 'settings.magicPrompts.page.group.linearIssueReview.description',
     blocks: [
-      { id: 'github.pr.review.visible', titleKey: 'settings.magicPrompts.page.block.visiblePrompt' },
-      { id: 'github.pr.review.instructions', titleKey: 'settings.magicPrompts.page.block.instructions' },
-    ],
-  },
-  'github.issue.review': {
-    titleKey: 'settings.magicPrompts.page.group.githubIssueReview.title',
-    descriptionKey: 'settings.magicPrompts.page.group.githubIssueReview.description',
-    blocks: [
-      { id: 'github.issue.review.visible', titleKey: 'settings.magicPrompts.page.block.visiblePrompt' },
-      { id: 'github.issue.review.instructions', titleKey: 'settings.magicPrompts.page.block.instructions' },
-    ],
-  },
-  'github.pr.checks.review': {
-    titleKey: 'settings.magicPrompts.page.group.githubPrFailedChecksReview.title',
-    descriptionKey: 'settings.magicPrompts.page.group.githubPrFailedChecksReview.description',
-    blocks: [
-      { id: 'github.pr.checks.review.visible', titleKey: 'settings.magicPrompts.page.block.visiblePrompt' },
-      { id: 'github.pr.checks.review.instructions', titleKey: 'settings.magicPrompts.page.block.instructions' },
-    ],
-  },
-  'github.pr.comments.review': {
-    titleKey: 'settings.magicPrompts.page.group.githubPrCommentsReview.title',
-    descriptionKey: 'settings.magicPrompts.page.group.githubPrCommentsReview.description',
-    blocks: [
-      { id: 'github.pr.comments.review.visible', titleKey: 'settings.magicPrompts.page.block.visiblePrompt' },
-      { id: 'github.pr.comments.review.instructions', titleKey: 'settings.magicPrompts.page.block.instructions' },
-    ],
-  },
-  'github.pr.comment.single': {
-    titleKey: 'settings.magicPrompts.page.group.githubSinglePrCommentReview.title',
-    descriptionKey: 'settings.magicPrompts.page.group.githubSinglePrCommentReview.description',
-    blocks: [
-      { id: 'github.pr.comment.single.visible', titleKey: 'settings.magicPrompts.page.block.visiblePrompt' },
-      { id: 'github.pr.comment.single.instructions', titleKey: 'settings.magicPrompts.page.block.instructions' },
+      { id: 'linear.issue.review.visible', titleKey: 'settings.magicPrompts.page.block.visiblePrompt' },
+      { id: 'linear.issue.review.instructions', titleKey: 'settings.magicPrompts.page.block.instructions' },
     ],
   },
   'git.conflict.resolve': {
@@ -148,6 +117,14 @@ const PROMPT_PAGE_MAP: Record<string, PromptPageConfig> = {
       { id: 'session.plan.instructions', titleKey: 'settings.magicPrompts.page.block.instructions' },
     ],
   },
+  'session.craftGoal': {
+    titleKey: 'settings.magicPrompts.page.group.sessionCraftGoal.title',
+    descriptionKey: 'settings.magicPrompts.page.group.sessionCraftGoal.description',
+    blocks: [
+      { id: 'session.craftGoal.visible', titleKey: 'settings.magicPrompts.page.block.visiblePrompt' },
+      { id: 'session.craftGoal.instructions', titleKey: 'settings.magicPrompts.page.block.instructions' },
+    ],
+  },
   'session.catchup': {
     titleKey: 'settings.magicPrompts.page.group.sessionCatchUp.title',
     descriptionKey: 'settings.magicPrompts.page.group.sessionCatchUp.description',
@@ -186,6 +163,7 @@ const PROMPT_PAGE_MAP: Record<string, PromptPageConfig> = {
     blocks: [
       { id: 'session.fusion.visible', titleKey: 'settings.magicPrompts.page.block.visiblePrompt' },
       { id: 'session.fusion.instructions', titleKey: 'settings.magicPrompts.page.block.instructions' },
+      { id: 'session.fusion.codeInstructions', titleKey: 'settings.magicPrompts.page.block.codeFusionInstructions' },
     ],
   },
 };
@@ -309,114 +287,92 @@ export const MagicPromptsPage: React.FC = () => {
   }
 
   return (
-    <div className="h-full overflow-auto">
-      <div className="mx-auto w-full max-w-4xl px-6 py-6 space-y-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <h2 className="typography-ui-header font-semibold text-foreground">{tUnsafe(pageConfig.titleKey)}</h2>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-                </TooltipTrigger>
-                <TooltipContent sideOffset={8} className="max-w-xs">
-                  {tUnsafe(pageConfig.descriptionKey)}
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          </div>
-          <Button
-            data-settings-item="magic-prompts.reset-overrides"
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              void handleResetAll();
-            }}
-            disabled={resettingAll || Object.keys(overrides).length === 0}
+    <SettingsPageLayout
+      title={tUnsafe(pageConfig.titleKey)}
+      titleAccessory={(
+        <SettingsInfoHint contentClassName="max-w-xs">{tUnsafe(pageConfig.descriptionKey)}</SettingsInfoHint>
+      )}
+      headerEnd={(
+        <Button
+          data-settings-item="magic-prompts.reset-overrides"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            void handleResetAll();
+          }}
+          disabled={resettingAll || Object.keys(overrides).length === 0}
+        >
+          {resettingAll ? t('settings.magicPrompts.page.actions.resetting') : t('settings.magicPrompts.page.actions.resetAllOverrides')}
+        </Button>
+      )}
+      showSaveStatus={false}
+    >
+      {pageConfig.blocks.map((block, index) => {
+        const definition = getMagicPromptDefinition(block.id);
+        const baseline = getBaseline(block.id);
+        const draft = getDraft(block.id);
+        const isOverridden = hasOwn(overrides, block.id);
+        const isDirty = draft !== baseline;
+        const isInvalidEmptyVisiblePrompt = isVisiblePromptId(block.id) && draft.trim().length === 0;
+        const saving = savingIds[block.id] === true;
+        const resetting = resettingIds[block.id] === true;
+
+        return (
+          <SettingsSection
+            key={block.id}
+            title={tUnsafe(block.titleKey)}
+            info={definition.description}
+            description={
+              definition.placeholders && definition.placeholders.length > 0
+                ? `${t('settings.magicPrompts.page.placeholdersLabel')} ${definition.placeholders.map((item) => `{{${item.key}}}`).join(', ')}`
+                : undefined
+            }
+            divider={index > 0}
+            settingsItem={isVisiblePromptId(block.id) ? 'magic-prompts.visible-prompt' : 'magic-prompts.instructions'}
+            contentClassName="space-y-3"
           >
-            {resettingAll ? t('settings.magicPrompts.page.actions.resetting') : t('settings.magicPrompts.page.actions.resetAllOverrides')}
-          </Button>
-        </div>
+            <Textarea
+              value={draft}
+              onChange={(event) => setDraft(block.id, event.target.value)}
+              className="min-h-[220px] font-mono text-sm"
+            />
+            {isInvalidEmptyVisiblePrompt && (
+              <div className="typography-micro text-[var(--status-error)]">{t('settings.magicPrompts.page.validation.visiblePromptRequired')}</div>
+            )}
 
-        {pageConfig.blocks.map((block, index) => {
-          const definition = getMagicPromptDefinition(block.id);
-          const baseline = getBaseline(block.id);
-          const draft = getDraft(block.id);
-          const isOverridden = hasOwn(overrides, block.id);
-          const isDirty = draft !== baseline;
-          const isInvalidEmptyVisiblePrompt = isVisiblePromptId(block.id) && draft.trim().length === 0;
-          const saving = savingIds[block.id] === true;
-          const resetting = resettingIds[block.id] === true;
-
-          return (
-            <section
-              key={block.id}
-              data-settings-item={isVisiblePromptId(block.id) ? 'magic-prompts.visible-prompt' : 'magic-prompts.instructions'}
-              className={index > 0 ? 'space-y-3 pt-5 border-t border-border' : 'space-y-3'}
-            >
-              <div className="space-y-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="typography-ui-label text-foreground">{tUnsafe(block.titleKey)}</h3>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent sideOffset={8} className="max-w-xs">
-                      {definition.description}
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-                {definition.placeholders && definition.placeholders.length > 0 && (
-                  <div className="typography-micro text-muted-foreground">
-                    {t('settings.magicPrompts.page.placeholdersLabel')}{' '}
-                    {definition.placeholders.map((item) => `{{${item.key}}}`).join(', ')}
-                  </div>
-                )}
+            <div className="flex items-center justify-between gap-2">
+              <span className="typography-micro text-muted-foreground">
+                {isDirty
+                  ? t('settings.magicPrompts.page.status.unsavedChanges')
+                  : isOverridden
+                    ? t('settings.magicPrompts.page.status.usingSavedOverride')
+                    : t('settings.magicPrompts.page.status.usingBuiltinDefault')}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    void resetPrompt(block.id);
+                  }}
+                  disabled={!isOverridden || saving || resetting}
+                >
+                  {resetting ? t('settings.magicPrompts.page.actions.resetting') : t('settings.magicPrompts.page.actions.resetToDefault')}
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    void savePrompt(block.id);
+                  }}
+                  disabled={!isDirty || saving || resetting || isInvalidEmptyVisiblePrompt}
+                >
+                  {saving ? t('settings.common.actions.saving') : t('settings.magicPrompts.page.actions.save')}
+                </Button>
               </div>
-
-              <Textarea
-                value={draft}
-                onChange={(event) => setDraft(block.id, event.target.value)}
-                className="min-h-[220px] font-mono text-sm"
-              />
-              {isInvalidEmptyVisiblePrompt && (
-                <div className="typography-micro text-[var(--status-error)]">{t('settings.magicPrompts.page.validation.visiblePromptRequired')}</div>
-              )}
-
-              <div className="flex items-center justify-between gap-2">
-                <span className="typography-micro text-muted-foreground">
-                  {isDirty
-                    ? t('settings.magicPrompts.page.status.unsavedChanges')
-                    : isOverridden
-                      ? t('settings.magicPrompts.page.status.usingSavedOverride')
-                      : t('settings.magicPrompts.page.status.usingBuiltinDefault')}
-                </span>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      void resetPrompt(block.id);
-                    }}
-                    disabled={!isOverridden || saving || resetting}
-                  >
-                    {resetting ? t('settings.magicPrompts.page.actions.resetting') : t('settings.magicPrompts.page.actions.resetToDefault')}
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      void savePrompt(block.id);
-                    }}
-                    disabled={!isDirty || saving || resetting || isInvalidEmptyVisiblePrompt}
-                  >
-                    {saving ? t('settings.common.actions.saving') : t('settings.magicPrompts.page.actions.save')}
-                  </Button>
-                </div>
-              </div>
-            </section>
-          );
-        })}
-      </div>
-    </div>
+            </div>
+          </SettingsSection>
+        );
+      })}
+    </SettingsPageLayout>
   );
 };

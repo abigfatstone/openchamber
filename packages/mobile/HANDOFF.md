@@ -81,9 +81,10 @@ iOS Simulator helpers: `mobile:sim:{boot,install,launch,run,serve,list,kill}` (s
 - **Connection onboarding** — server URL entry, password unlock for locked servers, client-token
   issuance, saved connections, `Instances` management sheet, auto-connect to the last instance on
   launch. Deleting the active instance resets the runtime to the connect screen.
-- **QR pairing** — `@capacitor-mlkit/barcode-scanning`. Android's Google code scanner module is
-  downloaded on first scan (needs Play Services + network); `mobileQrScan.ts` installs/awaits it
-  and retries. CAMERA permission + `NSCameraUsageDescription` declared.
+- **QR pairing** — `@capacitor-mlkit/barcode-scanning`. Android uses the CameraX-backed
+  `startScan()` flow with the barcode model bundled in the app, so scanning works offline and
+  without Google Play Services. iOS uses the plugin's native scanner. CAMERA permission +
+  `NSCameraUsageDescription` declared.
 - **Secure storage** — `@aparajita/capacitor-secure-storage` for connection tokens.
 - **Deep links** — `openchamber://` URL scheme; a reusable intent vocabulary (`apps/deepLinks.ts`)
   used by notification taps, widgets, and Control Center. Cold-launch intents are stashed.
@@ -95,7 +96,7 @@ iOS Simulator helpers: `mobile:sim:{boot,install,launch,run,serve,list,kill}` (s
 - **Native chrome** — status bar (iOS overlay + safe-area; Android inset + themed background),
   keyboard handling (iOS CSS inset; Android native `adjustResize`), edge-swipe session switch,
   back-button handling, app-icon badge.
-- **App icons** — iOS `AppIcon`; Android adaptive launcher icon; notification small icon
+- **App icons** — iOS `AppIcon`; Android adaptive and themed launcher icon; notification small icon
   (`ic_stat_notify`).
 
 ## Push / notifications architecture
@@ -128,10 +129,11 @@ iOS Simulator helpers: `mobile:sim:{boot,install,launch,run,serve,list,kill}` (s
   brings `firebase-messaging`.
 - Manifest: permissions `INTERNET`, `CAMERA` (+ optional camera feature), `POST_NOTIFICATIONS`
   (Android 13+; older versions allow notifications by default). `windowSoftInputMode=adjustResize`.
-  ML Kit `com.google.mlkit.vision.DEPENDENCIES=barcode_ui` meta (preloads the code scanner). FCM
-  `default_notification_icon=@drawable/ic_stat_notify`.
-- Adaptive launcher icon: full-bleed color background + `ic_launcher_foreground` (sources under
-  `packages/mobile/assets/`, regenerable with `@capacitor/assets`).
+  FCM `default_notification_icon=@drawable/ic_stat_notify`.
+- Adaptive and themed launcher icon: full-bleed color background + `ic_launcher_foreground` (sources under
+  `packages/mobile/assets/`, regenerable with `@capacitor/assets`). The `<monochrome>` layer
+  (`ic_launcher_monochrome.png`) is hand-maintained: regeneration rewrites `ic_launcher.xml`
+  without it, so re-add the layer afterwards.
 
 ## Quirks / gotchas
 

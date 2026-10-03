@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { Message, Part } from '@opencode-ai/sdk/v2';
+import type { Message, Part } from '@/lib/opencode/model';
 import { buildProjectionCacheKey } from './turnProjectionCache';
 import type { ChatMessageEntry } from './types';
 
@@ -12,8 +12,8 @@ describe('turnProjectionCache', () => {
   test('keeps the cache key stable for unchanged message and part references', () => {
     const messages = [createEntry('hello')];
 
-    const first = buildProjectionCacheKey('session_1', messages, false, false);
-    const second = buildProjectionCacheKey('session_1', messages, false, false);
+    const first = buildProjectionCacheKey('session_1', messages, false, false, 'merge');
+    const second = buildProjectionCacheKey('session_1', messages, false, false, 'merge');
 
     expect(second).toBe(first);
   });
@@ -27,8 +27,8 @@ describe('turnProjectionCache', () => {
       },
     ];
 
-    const beforeKey = buildProjectionCacheKey('session_1', before, false, false);
-    const afterKey = buildProjectionCacheKey('session_1', after, false, false);
+    const beforeKey = buildProjectionCacheKey('session_1', before, false, false, 'merge');
+    const afterKey = buildProjectionCacheKey('session_1', after, false, false, 'merge');
 
     expect(afterKey).not.toBe(beforeKey);
   });

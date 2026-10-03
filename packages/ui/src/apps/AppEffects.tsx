@@ -1,13 +1,16 @@
 import React from 'react';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { usePwaManifestSync } from '@/hooks/usePwaManifestSync';
+import { useMessageQueueHoldSync } from '@/hooks/useMessageQueueHoldSync';
 import { useQueuedMessageAutoSend } from '@/hooks/useQueuedMessageAutoSend';
 import { useSessionAutoCleanup } from '@/hooks/useSessionAutoCleanup';
+import { useMergedWorktreeCleanup } from '@/hooks/useMergedWorktreeCleanup';
 import { useWindowControlsOverlayLayout } from '@/hooks/useWindowControlsOverlayLayout';
 import { setOptimisticRefs } from '@/sync/session-actions';
 import { markSessionViewed } from '@/sync/notification-store';
 import { setExternallyViewedSession } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
+import { isServerOwnedMessageQueue } from '@/stores/messageQueueStore';
 
 const MINI_CHAT_PRESENCE_CHANNEL = 'openchamber:mini-chat-presence';
 
@@ -22,13 +25,16 @@ const SyncOptimisticBridge: React.FC = () => {
   const sync = useSync();
   const addRef = React.useRef(sync.optimistic.add);
   const removeRef = React.useRef(sync.optimistic.remove);
+  const confirmRef = React.useRef(sync.optimistic.confirm);
   addRef.current = sync.optimistic.add;
   removeRef.current = sync.optimistic.remove;
+  confirmRef.current = sync.optimistic.confirm;
 
   React.useEffect(() => {
     setOptimisticRefs(
       (input) => addRef.current(input),
       (input) => removeRef.current(input),
+      (input) => confirmRef.current(input),
     );
   }, []);
 
@@ -62,8 +68,12 @@ const MiniChatPresenceBridge: React.FC = () => {
 export function SyncRuntimeEffects({ embeddedBackgroundWorkEnabled }: {
   embeddedBackgroundWorkEnabled: boolean;
 }) {
-  useSessionAutoCleanup(embeddedBackgroundWorkEnabled);
-  useQueuedMessageAutoSend(embeddedBackgroundWorkEnabled);
+  useSessionAutoCleanup({ enabled: embeddedBackgroundWorkEnabled });
+  useMergedWorktreeCleanup({ enabled: embeddedBackgroundWorkEnabled });
+  // Web, desktop, and mobile hand the queue to the OpenChamber server, which
+  // delivers it with or without a UI; only VS Code still sends from the UI.
+  useQueuedMessageAutoSend(embeddedBackgroundWorkEnabled && !isServerOwnedMessageQueue());
+  useMessageQueueHoldSync();
 
   return <SyncOptimisticBridge />;
 }

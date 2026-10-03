@@ -1,34 +1,20 @@
-const EXPANDABLE_TOOL_NAMES = new Set<string>([
-    'edit', 'multiedit', 'apply_patch', 'str_replace', 'str_replace_based_edit_tool',
-    'bash', 'shell', 'cmd', 'terminal',
-    'write', 'create', 'file_write',
-    'question', 'task', 'lsp',
-]);
+import { OPENCODE_TOOLS, normalizeToolName, type ToolName } from '@/lib/opencode/tools';
 
-const STANDALONE_TOOL_NAMES = new Set<string>(['task']);
+// Keep only tools with a direct in-app navigation destination compact. Every
+// other tool uses ToolPart so custom, plugin, and MCP calls expose their input
+// and output through the common expandable renderer.
+const STATIC_TOOL_NAMES = new Set<string>([OPENCODE_TOOLS.read, OPENCODE_TOOLS.skill]);
 
-const normalizeToolName = (toolName: unknown): string => {
-    if (typeof toolName !== 'string') return '';
-    const trimmed = toolName.trim().toLowerCase();
-    if (!trimmed) return '';
+const STANDALONE_TOOL_NAMES = new Set<string>([OPENCODE_TOOLS.subagent]);
 
-    const withoutIndex = trimmed.replace(/:\d+$/, '');
-    if (withoutIndex.includes('.')) {
-        const parts = withoutIndex.split('.').filter(Boolean);
-        return parts[parts.length - 1] ?? withoutIndex;
-    }
-    return withoutIndex;
+export const isExpandableTool = (toolName: ToolName): boolean => {
+    return !isStaticTool(toolName);
 };
 
-export const isExpandableTool = (toolName: unknown): boolean => {
-    return EXPANDABLE_TOOL_NAMES.has(normalizeToolName(toolName));
-};
-
-export const isStandaloneTool = (toolName: unknown): boolean => {
+export const isStandaloneTool = (toolName: ToolName): boolean => {
     return STANDALONE_TOOL_NAMES.has(normalizeToolName(toolName));
 };
 
-export const isStaticTool = (toolName: unknown): boolean => {
-    if (typeof toolName !== 'string') return false;
-    return !isExpandableTool(toolName) && !isStandaloneTool(toolName);
+export const isStaticTool = (toolName: ToolName): boolean => {
+    return STATIC_TOOL_NAMES.has(normalizeToolName(toolName));
 };

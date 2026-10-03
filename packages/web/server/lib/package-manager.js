@@ -4,6 +4,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { fetchUpdateNotes } from './changelog/update-notes.js';
+import { isEnterpriseMode } from './enterprise-mode.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,7 +13,8 @@ const __dirname = path.dirname(__filename);
 const PACKAGE_NAME = '@openchamber/web';
 const PACKAGE_PATH_SEGMENTS = PACKAGE_NAME.split('/');
 const NPM_REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME}`;
-const CHANGELOG_URL = 'https://raw.githubusercontent.com/btriapitsyn/openchamber/main/CHANGELOG.md';
+const GITHUB_RELEASES_URL = 'https://github.com/openchamber/openchamber/releases';
+const GITHUB_RELEASES_API_URL = 'https://api.github.com/repos/openchamber/openchamber/releases';
 let cachedDetectedPm = null;
 
 function getSpawnSyncBaseOptions() {
@@ -29,7 +32,7 @@ function getOpenChamberConfigDir() {
 }
 
 function sanitizeInstallScope(scope) {
-  if (scope === 'desktop-electron' || scope === 'vscode' || scope === 'web') return scope;
+  if (scope === 'desktop-electron' || scope === 'vscode' || scope === 'web' || scope === 'mobile-capacitor') return scope;
   return 'web';
 }
 
@@ -65,7 +68,7 @@ function mapArch(value) {
 }
 
 function normalizeAppType(value) {
-  if (value === 'web' || value === 'desktop-electron' || value === 'vscode') return value;
+  if (value === 'web' || value === 'desktop-electron' || value === 'vscode' || value === 'mobile-capacitor') return value;
   return 'web';
 }
 
@@ -75,7 +78,7 @@ function normalizeDeviceClass(value) {
 }
 
 function normalizePlatform(value) {
-  if (value === 'macos' || value === 'windows' || value === 'linux' || value === 'web') return value;
+  if (value === 'macos' || value === 'windows' || value === 'linux' || value === 'web' || value === 'android' || value === 'ios') return value;
   return mapPlatform(process.platform);
 }
 
@@ -84,13 +87,51 @@ function normalizeArch(value) {
   return mapArch(process.arch);
 }
 
+async function resolveAndroidApkUrl(version, candidateUrl) {
+  if (typeof candidateUrl === 'string') {
+    try {
+      if (new URL(candidateUrl).pathname.toLowerCase().endsWith('.apk')) return candidateUrl;
+    } catch {
+      // Resolve malformed or non-APK values from the authoritative release assets below.
+    }
+  }
+
+  try {
+    const response = await fetch(`${GITHUB_RELEASES_API_URL}/tags/v${version}`, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'openchamber-update-check',
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) return undefined;
+
+    const release = await response.json();
+    const apkAssets = Array.isArray(release?.assets)
+      ? release.assets.filter((asset) => (
+        typeof asset?.name === 'string'
+        && asset.name.toLowerCase().endsWith('.apk')
+        && typeof asset.browser_download_url === 'string'
+      ))
+      : [];
+    const canonicalAsset = apkAssets.find((asset) => /^OpenChamber-.+-android\.apk$/i.test(asset.name));
+    return (canonicalAsset || apkAssets[0])?.browser_download_url;
+  } catch {
+    return undefined;
+  }
+}
+
 async function checkForUpdatesFromApi(currentVersion, options = {}) {
   try {
     const appType = normalizeAppType(options.appType);
     const hostPlatform = mapPlatform(process.platform);
     const hostArch = mapArch(process.arch);
-    const platform = appType === 'vscode' ? normalizePlatform(options.platform) : hostPlatform;
-    const arch = appType === 'vscode' ? normalizeArch(options.arch) : hostArch;
+    const shouldTrustClientPlatform = appType === 'desktop-electron' || appType === 'vscode' || appType === 'mobile-capacitor';
+    const platform = shouldTrustClientPlatform ? normalizePlatform(options.platform) : hostPlatform;
+    const arch = shouldTrustClientPlatform ? normalizeArch(options.arch) : hostArch;
+    // Enterprise mode keeps the update check (security fixes must reach the
+    // company) but never reports usage, whatever the client asked for.
+    const reportUsage = options.reportUsage !== false && !isEnterpriseMode();
     const payload = {
       appType,
       deviceClass: normalizeDeviceClass(options.deviceClass),
@@ -98,9 +139,9 @@ async function checkForUpdatesFromApi(currentVersion, options = {}) {
       arch,
       channel: 'stable',
       currentVersion,
-      installId: getOrCreateInstallId(appType),
+      installId: reportUsage ? (options.installId || getOrCreateInstallId(appType)) : undefined,
       instanceMode: options.instanceMode || 'unknown',
-      reportUsage: options.reportUsage !== false,
+      reportUsage,
     };
 
     const response = await fetch(UPDATE_CHECK_URL, {
@@ -120,11 +161,23 @@ async function checkForUpdatesFromApi(currentVersion, options = {}) {
     const versionComparison = compareVersions(data.latestVersion, currentVersion);
     if (versionComparison < 0) return null;
 
+    const releaseUrl = `${GITHUB_RELEASES_URL}/tag/v${data.latestVersion}`;
+    const downloadUrl = typeof data.downloadUrl === 'string'
+      ? data.downloadUrl
+      : typeof data.download?.url === 'string'
+        ? data.download.url
+        : undefined;
+    const updateAvailable = Boolean(data.updateAvailable) && versionComparison > 0;
+    const mobileDownloadUrl = updateAvailable && appType === 'mobile-capacitor' && platform === 'android'
+      ? await resolveAndroidApkUrl(data.latestVersion, downloadUrl)
+      : undefined;
     return {
-      available: Boolean(data.updateAvailable) && versionComparison > 0,
+      available: updateAvailable,
       version: data.latestVersion,
       currentVersion,
       body: typeof data.releaseNotes === 'string' ? data.releaseNotes : undefined,
+      releaseUrl: typeof data.releaseNotesUrl === 'string' ? data.releaseNotesUrl : releaseUrl,
+      downloadUrl: mobileDownloadUrl,
       nextSuggestedCheckInSec:
         typeof data.nextSuggestedCheckInSec === 'number' && Number.isFinite(data.nextSuggestedCheckInSec)
           ? data.nextSuggestedCheckInSec
@@ -569,23 +622,23 @@ function isCommandAvailable(command) {
   }
 }
 
+function getGlobalListArgs(pm) {
+  switch (pm) {
+    case 'pnpm':
+      return ['list', '-g', '--depth=0', PACKAGE_NAME];
+    case 'yarn':
+      return ['global', 'list', '--depth=0'];
+    case 'bun':
+      return ['pm', 'ls', '-g'];
+    default:
+      return ['list', '-g', '--depth=0', PACKAGE_NAME];
+  }
+}
+
 function isPackageInstalledWith(pm) {
   try {
     const pmCommand = resolvePackageManagerCommand(pm);
-    let args;
-    switch (pm) {
-      case 'pnpm':
-        args = ['list', '-g', '--depth=0', PACKAGE_NAME];
-        break;
-      case 'yarn':
-        args = ['global', 'list', '--depth=0'];
-        break;
-      case 'bun':
-        args = ['pm', 'ls', '-g'];
-        break;
-      default:
-        args = ['list', '-g', '--depth=0', PACKAGE_NAME];
-    }
+    const args = getGlobalListArgs(pm);
 
     const result = spawnSync(pmCommand, args, {
       encoding: 'utf8',
@@ -601,20 +654,63 @@ function isPackageInstalledWith(pm) {
   }
 }
 
+// npm, bun and yarn print `name@version`; pnpm separates the name and the
+// version with whitespace. An optional `v` covers yarn listing formats.
+const GLOBAL_VERSION_PATTERN = /@openchamber\/web[@\s]+v?(\d[\w.+-]*)/;
+
 /**
- * Get the update command for the detected package manager
+ * Read the globally installed version of the package as reported by the
+ * package manager itself. Returns null when the listing cannot be read or
+ * parsed. The listing command may exit non-zero when the package is missing,
+ * so stdout is parsed regardless of the status.
  */
-export function getUpdateCommand(pm = detectPackageManager()) {
+function getInstalledGlobalVersion(pm) {
+  try {
+    const pmCommand = resolvePackageManagerCommand(pm);
+    const result = spawnSync(pmCommand, getGlobalListArgs(pm), {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 10000,
+      ...getSpawnSyncBaseOptions(),
+    });
+    return String(result.stdout || '').match(GLOBAL_VERSION_PATTERN)?.[1] || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Normalize a version string into an exact install target.
+ * Returns the plain version or null when the value is not a concrete version.
+ */
+function normalizeTargetVersion(value) {
+  const normalized = String(value ?? '').trim().replace(/^v/, '');
+  return /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(normalized) ? normalized : null;
+}
+
+/**
+ * Get the update command for the detected package manager.
+ * When an exact target version is given, it is pinned in the spec instead of
+ * re-resolving the `latest` dist-tag at install time: the update check and the
+ * package manager see different metadata, and dist-tag resolution can lag the
+ * check behind a fresh release (stale packument cache, pnpm minimumReleaseAge).
+ */
+export function getUpdateCommand(pm = detectPackageManager(), options = {}) {
+  const targetVersion = normalizeTargetVersion(options.targetVersion);
+  if (options.targetVersion != null && !targetVersion) {
+    throw new Error(`Invalid target version for update: ${String(options.targetVersion)}`);
+  }
+  const versionSpec = targetVersion ? `@${targetVersion}` : '@latest';
   const pmCommand = quoteCommand(resolvePackageManagerCommand(pm));
   switch (pm) {
     case 'pnpm':
-      return `${pmCommand} add -g ${PACKAGE_NAME}@latest`;
+      return `${pmCommand} add -g ${PACKAGE_NAME}${versionSpec}`;
     case 'yarn':
-      return `${pmCommand} global add ${PACKAGE_NAME}@latest`;
+      return `${pmCommand} global add ${PACKAGE_NAME}${versionSpec}`;
     case 'bun':
-      return `${pmCommand} add -g ${PACKAGE_NAME}@latest`;
+      return `${pmCommand} add -g ${PACKAGE_NAME}${versionSpec}`;
     default:
-      return `${pmCommand} install -g ${PACKAGE_NAME}@latest`;
+      return `${pmCommand} install -g ${PACKAGE_NAME}${versionSpec}`;
   }
 }
 
@@ -687,40 +783,16 @@ function compareVersions(left, right) {
   return 0;
 }
 
-/**
- * Fetch changelog notes between versions
- */
+/** Release notes between the installed and the offered version, or undefined. */
 async function fetchChangelogNotes(fromVersion, toVersion) {
-  try {
-    const response = await fetch(CHANGELOG_URL, {
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (!response.ok) return undefined;
-
-    const changelog = await response.text();
-    const sections = changelog.split(/^## /m).slice(1);
-
-    const relevantSections = sections.filter((section) => {
-      const match = section.match(/^\[(\d+\.\d+\.\d+)\]/);
-      if (!match) return false;
-      return compareVersions(match[1], fromVersion) > 0 && compareVersions(match[1], toVersion) <= 0;
-    });
-
-    if (relevantSections.length === 0) return undefined;
-
-    return relevantSections
-      .map((s) => '## ' + s.trim())
-      .join('\n\n');
-  } catch {
-    return undefined;
-  }
+  return (await fetchUpdateNotes(fromVersion, toVersion, compareVersions)) ?? undefined;
 }
 
 export async function checkForUpdates(options = {}) {
   const currentVersion = options.currentVersion || getCurrentVersion();
   const pm = detectPackageManager();
   const appType = normalizeAppType(options.appType);
+  const platform = normalizePlatform(options.platform);
 
   if (currentVersion !== 'unknown') {
     const remote = await checkForUpdatesFromApi(currentVersion, options);
@@ -751,8 +823,12 @@ export async function checkForUpdates(options = {}) {
 
   const available = compareVersions(latestVersion, currentVersion) > 0;
   let changelog;
+  let downloadUrl;
   if (available) {
     changelog = await fetchChangelogNotes(currentVersion, latestVersion);
+    if (appType === 'mobile-capacitor' && platform === 'android') {
+      downloadUrl = await resolveAndroidApkUrl(latestVersion);
+    }
   }
 
   return {
@@ -760,6 +836,8 @@ export async function checkForUpdates(options = {}) {
     version: latestVersion,
     currentVersion,
     body: changelog,
+    releaseUrl: `${GITHUB_RELEASES_URL}/tag/v${latestVersion}`,
+    downloadUrl,
     packageManager: pm,
     // Show our CLI command, not raw package manager command
     updateCommand: 'openchamber update',
@@ -767,10 +845,14 @@ export async function checkForUpdates(options = {}) {
 }
 
 /**
- * Execute the update (used by CLI)
+ * Execute the update (used by CLI).
+ * When an exact target version is given, the globally installed version is
+ * read back after the package manager exits: a zero exit status alone is not
+ * proof the target landed (stale dist-tag resolution, pnpm release-age policy),
+ * and the caller must not report success without the version matching.
  */
 export function executeUpdate(pm = detectPackageManager(), options = {}) {
-  const command = getUpdateCommand(pm);
+  const command = getUpdateCommand(pm, { targetVersion: options.targetVersion });
   if (!options?.silent) {
     console.log(`Updating ${PACKAGE_NAME} using ${pm}...`);
     console.log(`Running: ${command}`);
@@ -782,8 +864,43 @@ export function executeUpdate(pm = detectPackageManager(), options = {}) {
     ...getSpawnSyncBaseOptions(),
   });
 
+  if (result.status !== 0) {
+    return {
+      success: false,
+      exitCode: result.status,
+      error: `Package manager exited with code ${result.status}`,
+    };
+  }
+
+  const targetVersion = normalizeTargetVersion(options.targetVersion);
+  if (!targetVersion) {
+    return {
+      success: true,
+      exitCode: result.status,
+      installedVersion: null,
+    };
+  }
+
+  const installedVersion = getInstalledGlobalVersion(pm);
+  if (!installedVersion) {
+    return {
+      success: false,
+      exitCode: result.status,
+      error: `Could not determine the globally installed ${PACKAGE_NAME} version after the update; not reporting success`,
+    };
+  }
+
+  if (compareVersions(installedVersion, targetVersion) !== 0) {
+    return {
+      success: false,
+      exitCode: result.status,
+      error: `Installed ${PACKAGE_NAME} version ${installedVersion} does not match target ${targetVersion}. The package manager may have resolved different metadata or filtered the release.`,
+    };
+  }
+
   return {
-    success: result.status === 0,
+    success: true,
     exitCode: result.status,
+    installedVersion,
   };
 }

@@ -112,7 +112,7 @@ describe('createRuntimeUrlResolver', () => {
   test('adds local URL auth token to desktop realtime proxy URL', () => {
     setRuntimeExtraHeaders({ 'CF-Access-Client-Id': 'client-id' });
     setRuntimeUrlAuthToken('remote-url-token', Date.now() + 60_000);
-    setLocalRuntimeUrlAuthToken('local-url-token', Date.now() + 60_000);
+    setLocalRuntimeUrlAuthToken('local-url-token', Date.now() + 60_000, 'http://127.0.0.1:57123');
     try {
       withWindow({
         location: { origin: 'openchamber-ui://app', href: 'openchamber-ui://app/index.html' },
@@ -197,6 +197,9 @@ describe('createRuntimeUrlResolver', () => {
       expect(urls.sse('/api/openchamber/events')).toBe('https://api.example/api/openchamber/events');
       expect(urls.websocket('/api/global/event/ws')).toBe('wss://api.example/api/global/event/ws');
       expect(urls.authenticatedAsset('/api/projects/p1/icon')).toBe('https://api.example/api/projects/p1/icon');
+      expect(urls.assetWithUrlToken('/api/guests/hello/panel/index.html', 'oc_url_guest', { oc_ui: 'issue-page' })).toBe(
+        'https://api.example/api/guests/hello/panel/index.html?oc_ui=issue-page&oc_url_token=oc_url_guest',
+      );
     } finally {
       setRuntimeBearerToken(null);
     }
