@@ -46,6 +46,13 @@ describe('createRuntimeUrlResolver', () => {
     expect(urls.health({ probe: true })).toBe('https://server.example/health?probe=true');
   });
 
+  test('drops a query or hash carried by a saved host URL', () => {
+    const urls = createRuntimeUrlResolver({ apiBaseUrl: 'https://server.example:3000/?session=ses_1#top' });
+
+    expect(urls.api('/api/config/settings')).toBe('https://server.example:3000/api/config/settings');
+    expect(urls.health({ probe: true })).toBe('https://server.example:3000/health?probe=true');
+  });
+
   test('uses realtime base URL for SSE and WebSocket URLs', () => {
     const urls = createRuntimeUrlResolver({
       apiBaseUrl: 'https://api.example',

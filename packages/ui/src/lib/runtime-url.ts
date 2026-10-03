@@ -92,11 +92,13 @@ const buildHttpUrl = (baseUrl: string, path: string, query?: RuntimeUrlQuery): s
     return appendRelativeQuery(normalizedPath, query);
   }
 
-  // Concatenate instead of new URL(absolutePath, base): resolving an absolute
-  // path against a base keeps only the base's origin and silently drops any
-  // path prefix (e.g. https://host/openchamber -> https://host). Concatenation
-  // is correct for both origin-only bases and bases served under a sub-path.
-  const url = new URL(`${baseUrl.replace(/\/+$/, '')}${normalizedPath}`);
+  // Join onto the base's own path instead of new URL(absolutePath, base),
+  // which keeps only the origin and drops a sub-path prefix
+  // (https://host/openchamber -> https://host). A saved host URL can still
+  // carry a query or hash from the browser address bar; neither belongs to
+  // the API path, so they are dropped.
+  const base = new URL(baseUrl);
+  const url = new URL(`${base.origin}${base.pathname.replace(/\/+$/, '')}${normalizedPath}`);
   appendQuery(url, query);
   return url.toString();
 };
